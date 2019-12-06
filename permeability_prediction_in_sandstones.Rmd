@@ -1,0 +1,799 @@
+---
+title: Characterizing cemented sandstones with physics-based and machine learning
+  approaches
+author: "Frank Male, Jerry L. Jensen, Larry W. Lake"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  word_document: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+require(XLConnect)
+require(MASS)
+require(tidyverse)
+require(qqplotr)
+require(ggpubr)
+require(latex2exp)
+require(janitor)
+require(caret)
+require(recipes)
+require(iml)
+library(reshape2)
+library(ggridges)
+require(dplyr)
+require(doParallel)
+require(xgboost)
+library(knitr)
+library(kableExtra)
+#library(ggtern)
+figdir <- "figures/"
+
+theme_set(theme_pubr())
+
+df <- readWorksheetFromFile("C:/Users/malef/Dropbox/ROZ/data/GARN1990.xlsx", sheet=1) %>%
+  mutate_at(vars(CD:IMP), ~ as.numeric(.)) %>%
+  mutate(WELL = str_trim(WELL)) %>%
+  ## Replace zeros in interparticle porosity and cement content to a value below the lowest measurable quantity
+  mutate(IMP = replace(IMP, IMP==0, 0.2),
+         ICL  = replace(ICL, ICL==0, 0.1),
+         QCM = replace(QCM, QCM==0, 0.1)) %>%
+  select(WELL, KLH, POR, IMP, GS, SO, KAO, ICL, QCM, CAL, DOL) %>%
+  drop_na()
+
+porosity_cutoff <- 5
+
+df_name <-readWorksheetFromFile("C:/Users/malef/Dropbox/ROZ/data/GARN1990.xlsx", sheet=2) %>%
+  rename(Var1=EXPLANATION.,explanation=Col2)
+
+erfinv <- function(x) qnorm((x + 1)/2)/sqrt(2)
+
+df <- df %>%
+  mutate(POR = POR/100,
+         IM_POR = IMP/100,
+         GS = GS*1e3,
+         mu = log(GS),
+         sigma = log(SO) / (sqrt(2) * erfinv(0.5)),
+         mean_GS = exp( mu + sigma/2),
+         Cv_GS = sqrt( exp( sigma^2) - 1),
+         gamma_GS = (exp(sigma^2) + 2) * Cv_GS,
+         tau_o = (0.9*IM_POR/(1-0.1*IM_POR))^(-0.378*2),
+         tau_u = tau_o * (1+Cv_GS),
+         a_o = 6 / mean_GS,
+         a_u = 6* (sigma^2 + mean_GS^2)/(gamma_GS * sigma^2 + 3*mean_GS*sigma^2 + mean_GS^3),
+         CK_void_fraction = IM_POR^3/(1-IM_POR)^2,
+         logk = log(KLH)  
+         )
+#now for the perm predictions
+df <-  df %>%
+  mutate(k_pl94_por = (mean_GS^2 * POR^3)/(72* tau_u * (1-POR)^2) * (gamma_GS * Cv_GS^3 + 3*Cv_GS^2 + 1)^2/(1 + Cv_GS^2)^2,
+         k_pl94_impor = (mean_GS^2 * IM_POR^3)/(72* tau_u * (1-IM_POR)^2) * (gamma_GS * Cv_GS^3 + 3*Cv_GS^2 + 1)^2/(1 + Cv_GS^2)^2
+         )
+ 
+df <- df %>%
+  mutate(P_f = (KAO + QCM + CAL + DOL)/100,
+         P_b = ICL/100,
+         POR_u = IM_POR + P_f + P_b,
+         m = P_f * (1-IM_POR)/IM_POR,
+         m_b = P_b * (1-IM_POR)/IM_POR,
+         tau_e = tau_u * (1+Cv_GS) * (1+ 2*m_b/(1-m_b))^2 * (1 + 2*m/((1-m) * IM_POR^(1/3.0)))^2,
+         a_e_sorta = a_u * (1 - POR_u)/(1-IM_POR), #+ a_b*P_b + a_f*P_f
+         porosity_group = if_else(IMP > porosity_cutoff, "High", "Low")
+         )
+
+set.seed(42)
+holdout.wells <- sample(unique(df$WELL), size=4)
+df_holdout <- filter(df, WELL %in% holdout.wells)
+df <- filter(df, !WELL %in% holdout.wells)
+
+
+## split between high and low phi
+df_lowphi <- filter(df, porosity_group=="Low")
+df_highphi <- filter(df, porosity_group!="Low")
+
+df_holdout_lp <- filter(df_holdout, porosity_group=="Low")
+df_holdout_hp <- filter(df_holdout, porosity_group!="Low")
+
+## Building recipes
+rec_obj_lp <- recipe(KLH ~ CK_void_fraction + tau_e + a_u + P_f + P_b + WELL, data=df_lowphi) %>%
+  step_log(KLH) %>%
+  update_role(WELL, new_role = "dataset split variable") %>%
+  step_log(all_predictors()) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors()) %>%
+  prep(training=df_lowphi, retain=TRUE)
+
+train_lp <- bake(rec_obj_lp, df_lowphi)
+test_lp <- bake(rec_obj_lp, filter(df_holdout, IMP <= porosity_cutoff)) 
+
+rec_obj_hp <- recipe(KLH ~ CK_void_fraction + tau_e + a_u + P_f + P_b + WELL, data=df_highphi) %>%
+  step_log(KLH) %>%
+  update_role(WELL, new_role = "dataset split variable") %>%
+  step_log(all_predictors()) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors()) %>%
+  prep(training=df_highphi, retain=TRUE)
+train_hp <- bake(rec_obj_hp, df_highphi)
+test_hp <- bake(rec_obj_hp, filter(df_holdout, IMP > porosity_cutoff))
+
+## Fit control for cross validation
+fit_control_lp <- trainControl(index = groupKFold(train_lp$WELL),
+                            allowParallel = TRUE)
+fit_control_hp <- trainControl(index = groupKFold(train_hp$WELL),
+                            allowParallel = TRUE)
+```
+
+## Abstract
+
+## Introduction
+Sandstones one of the most common types of reservoir rocks. Therefore, it is of great interest to predict the reservoir properties of sandstones. In this paper, we will focus on explaining the factors that influence sandstone permeability.  
+Two approaches are available for permeability prediction of sandstones: 1) a physics-based approach based on the Carman-Kozeny equation and 2) a machine learning approach that assumes no particular physical laws linking predictors and permeability. We will apply a hybrid approach that considers both the physical intuition encapsulated in the Carman-Kozeny equation and data-centric methods.  
+Kozeny (1927) and Carman (1937) developed an equation linking permeability to three factors: porosity, hydraulic tortuosity, and specific surface area.  
+Porosity and permeability are routinely measured during core analysis, but hydraulic tortuosity (as opposed to electrical tortuosity) and specific surface area are not. However, tortuosity and specific surface area arise from geologic processes that can be modeled and distributed throughout the reservoir. Therefore, understanding the magnitude and effect of proxies for tortuosity and surface area can aid in building accurate porosity-permeability transformations and applying these transformations in geomodels.  
+Panda and Lake (1994, 1995) developed a mathematical framework for estimating tortuosity and specific surface area for real rocks that had undergone diagenesis. With this framework, permeability can be predicted from the intergranular porosity, average grain diameter, grain size distribution, and fraction of various types of cements.  
+Machine learning is a tool that can be used to understand how useful proxies for tortuosity and specific surface area are for predicting permeability. With advanced non-parametric machine learning (such as the gradient boosting machine developed by Friedman, 2001), there is no requirement to assume a priori a functional form between these proxies and the predicted quantity. With the recent derivation of a consistent feature attribution system for explaining tree-based models (Lundberg et al., 2018), the functional form can be visualized after modeling.  
+Given the physics-based model and advanced machine learning approaches, we propose a hybrid approach, combining the best qualities of each approach.  
+In this study, we developed estimates for the permeability of the Garn sandstone reservoir (Ehrenberg, 1990), using the data from that study. We compared different methods for calculating the tortuosity and specific surface area from core description, and we found the most important determinants of porosity-permeability transforms in this case.
+
+## Methods
+### Physical models
+The most well-known physics-based approach to estimating permeability was developed by Kozeny (1927) and later modified by Carman (1937). In its modern form, the equation is written as
+$$k = \frac{\phi^3}{2\tau(1-\phi)^2 a^2},$$
+which, for simplicity, we will write as
+$$k = \frac{\phi_{CK}}{2\tau a^2},$$
+where  permeability is $k$,  porosity is $\phi$, tortuosity is $\tau$, the specific surface area is $a$, and the Carman-Kozeny void fraction is $\phi_{CK}$.
+For an uncemented sandstone, tortuosity can be calculated following the derivation in Appendix A, which comes from Panda and Lake (1994). For a cemented sandstone (Appendix B), the tortuosity changes because of cements blocking and forcing modification of the flow paths.  
+Specific surface area for an uncemented sandstone can be estimated from the particle size distribution, after assuming that the particles are spherical. After cementation, the nature of the cement is important in how the surface area changes. Some cements will coat the walls of the pores, slightly decreasing the specific surface area. Other cements will line or bridge the pores, moderately to greatly increasing the specific surface area.  
+A competing hypothesis is that pore throat sizes are the most important determinant of permeability-porosity transforms. This appears in the Winland relations that follow the form
+$$\ln r = A \ln k - B \ln \phi + C$$
+ 
+where $r$ is the pore throat radius. It is worth noting that Winland’s work focused on predicting pore throat radius (and therefore multiphase fluid flow properties) from permeability, rather than the other way around. However, in recent years, some studies have used wireline log measurements to constrain the pore throat radius in order to predict permeability (Ghanbarian et al., 2019).  
+This approach has been formalized by Doyen (1988), who applied effective medium theory to explain permeability with the equation  
+$$k =  \frac{\phi}{8\tau}  \frac{r_{eff}^4}{\langle r_b^2\rangle}$$
+where $r_{eff}$ is the effective pore throat radius and $\langle r_b^2\rangle$ is the spatial average of the square of the pore channel radius. This result is remarkably similar to the Carman-Kozeny equation, except that the dependency on specific surface area has been replaced with a dependency on the pore throat radii.  
+As a practical consideration, the pore throat radius might be more impacted by cements that coat the walls than cements that bridge the pores. However, the opposite is true for the specific surface area.
+
+### Data-driven models
+Empirical models have been important in reservoir engineering for a while. These models, such as Winland’s, find relationships between predictor variables and predictions. In the last two decades, advances in applied statistics and computing power have created new approaches for developing empirical relationships. This has spawned the field of data analytics and machine learning.  
+The data analytics approach is as follows: a) collect and clean data b) add new predictor variables c) perform exploratory analysis d) build machine learning models e) evaluate the machine learning models on new data f) interpret model results.  
+The data for this study comes from Ehrenberg (1990) and requires only minimal cleaning. However, it does not have all of the variables used in the Carman-Kozeny equation. Therefore, we performed feature engineering to derive these variables from Ehrenberg’s measurements. Among the variables we did not have were the mean particle size, the coefficient of variation of the particle size, and the skewness of the particle size distribution. These variables were derived through the procedure given in Appendix C.  
+During exploratory data analysis, we plot the distributions of predictor and response variables and make cross-plots between variable pairs to identify predictor variables with high co-linearity and with strong correlation to the response variable. In this case, the predictor variables include the porosity, Carman-Kozeny void fraction, Carman-Kozeny predictions of permeability, and the amount of pore-filling and pore-bridging cement present.  
+Ehrenberg made two estimates of the porosity. One estimate came from helium porosiometry, and the other from point counting the intergranular macroporosity. These measurements are highly correlated, so including both in the regression model could cause overfitting. Therefore, we chose to use only one porosity estimate. Exploratory data analysis showed that intergranular macroporosity was a better predictor of permeability, and we chose it for the model.  
+We used two frameworks to build the models: multiple linear regression and gradient boosting regression (Friedman, 2001). Multiple linear regressions are common, easily interpretable, and robust to overfitting. These regressions also make several assumptions that are often broken in real data sets. Gradient boosting regressors make fewer assumptions about the distributions of the input data and the character of the relationship between predictor variables and the response, but are difficult to interpret and prone to overfitting. In order to maximize the benefits of these approaches and to minimize the drawbacks, we use both methods.  
+Through careful feature selection and pre-processing, we limited the degree to which the assumptions in linear regression are violated. As aforementioned, one of those steps is removing highly correlated predictor variables. In addition, we log-transformed the predictor variables and permeability (using the Box-Cox (1964) approach did not significantly improve the results) which reduces non-normality of the variables’ distributions.  
+Hyperparameters for the gradient boosting regressor were selected through cross-validation. These parameters were tuned in order to maximize the model effectiveness while reducing overfitting.  
+We evaluated the models through calculating the model explained variance (R^2^), mean absolute error, and root-mean squared error.
+In order to determine whether predictor variables contributed to the result, we used a non-parametric approach. This approach is called Permutation Feature Importance (Fisher, et al. (2018)), and estimates the importance of a predictor variable based on how much the model error increases after that variable is permuted.  
+Linear models can be interpreted simply through looking at the weights assigned to each feature. Gradient boosting methods require a different approach. Shapley Additive Explanations (SHAP values) offer a way to explain how each predictor variable contributed to each prediction (Lundberg and Lee, 2016). 
+
+## Results
+### Exploratory analysis
+First, we examined the distributions for porosity, permeability, Carman-Kozeny void fraction, and the proportion of various cements. The permeability, porosity---and therefore Carman-Kozeny void fraction--- distributions follow a bi-modal distribution. Therefore, when we performed regressions on the data, we treated each mode separately, rather than regressing across the entirety of the data. The data was split into samples where the interparticle macro-porosity is greater than 5% (high) or less than or equal to 5% (low).
+
+```{r exploratory, fig.width=7, fig.height=5}
+#Permeability Box-Cox
+
+#bc <- boxcox(KLH ~ 1, data = df)
+plot_hist <- function(x){
+  x <- ensym(x)
+  p <- ggplot(df, aes(x = KLH)) +
+    geom_histogram(fill="steelblue", bins=20) +
+    annotation_logticks(sides = "b") +
+    scale_y_continuous("Count", expand = c(0.001,0))
+  p
+}
+
+p1 <- 
+  plot_hist(KLH) +
+  scale_x_log10("Permeability (mD)", breaks = c(0.1,1,10,100,1000), labels = c(0.1,1,10,100,1000))
+
+p2 <- 
+  plot_hist(IMP) +
+  scale_x_log10("Interparticle macro-porosity (p.u.)", breaks = c(0.3, 1, 3, 10, 30), labels = c(0.3, 1, 3, 10, 30))
+
+
+p3 <- 
+  plot_hist(CK_void_fraction) +
+  scale_x_log10("Carman-Kozeny void fraction") 
+
+df_name_cements <- df_name %>%
+  mutate(cement_type = gsub("([A-Za-z\\-]+).*", "\\1",explanation),
+         cement_type = gsub("Non-kaolin","Non-kaolin clay", cement_type))
+ df_name_cements$cement_type = factor(df_name_cements$cement_type, 
+                                      levels = c("Quartz","Non-kaolin clay", "Kaolin", "Siderite",
+                                                 "Pyrite","K-feldspar","Dolomite","Detrital","Calcite")
+ )
+p4 <- 
+  df %>%
+  select(KAO,ICL,QCM, DOL) %>%
+  drop_na() %>%
+  reshape2::melt(value.name = "Percent")  %>% 
+  merge(df_name_cements, by.x = "variable", by.y ="Var1") %>%
+  #mutate(cement_type = reorder(cement_type, }))
+  ggplot(aes(x=Percent, y=cement_type)) +
+  geom_density_ridges(fill="steelblue", stat = "binline", binwidth = 2) +
+  scale_x_continuous(limits=c(0,22), expand=c(0,0)) +
+  scale_y_discrete(expand = c(0.01,0)) +
+  #theme_ridges() +
+  labs(x="Cement percent abundance", y="")
+ggarrange(p1, p2, p3, p4, ncol = 2, nrow = 2, labels = "auto")
+```
+
+Figure 1. Histograms for the distributions of a) Klinkenberg-corrected absolute permeability b) interparticle macro-porosity from point-counting c) Carman-Kozeny void fraction from macro-porosity d) percent cement abundance for several types of cement. The permeability and porosity follow bi-modal distributions. Quartz is the most abundant cement, followed by non-kaolin clay (smectite and illite).  
+Next, we cross-plotted permeability and several predictors: Carman-Kozeny void fraction, tortuosity, pre-cementation specific surface area, and fraction of pore-bridging and pore-filling cement. Pore-filling cement includes quartz, kaolin clay, and dolomite, and pore-bridging cement is non-kaolin clay.  
+```{r crossplots, fig.width=7, fig.height=7}
+crossplot <- function(x){
+  x <- ensym(x)
+  p <- ggplot(df, aes(!!x, KLH, color = porosity_group)) +
+    geom_point() +
+    scale_x_log10() +
+    scale_y_log10("Permeability (mD)", breaks = c(0.1, 1, 10, 100, 1000, 10000), 
+                  labels = c(0.1, 1, 10, 100, 1000, 10000))  +
+    annotation_logticks(sides = "bl") +
+    scale_color_manual("Porosity\ngroup", values = c("peru","steelblue"))
+  
+  p
+}
+p1 <- crossplot(CK_void_fraction) +
+  labs(x = "Carman-Kozeny void fraction")
+
+
+p2 <- crossplot(tau_e) +
+  labs(x = "Tortuosity")
+
+
+p3 <- crossplot(a_u) +
+  labs(x = "Specific surface area for grains")
+
+p4 <- crossplot(P_b) +
+  labs(x = "Pore bridging cement")
+
+p5 <- crossplot(P_f) +
+  labs(x = "Pore filling cement")
+
+ggarrange(p1, p2, p3, p4, p5, ncol = 2, nrow = 3, labels = "auto", legend = "right", common.legend = TRUE)
+```  
+
+Figure 2. Cross-plots between permeability and several predictor variables. These variables include a) the Carman-Kozeny void fraction, b) tortuosity following Panda and Lake (1995), c) specific surface area for the grains (pre-cementation), d) fraction of pore-bridging cement e) fraction of pore-filling cement. The color indicates whether the sample has greater than 5 percent porosity (orange) or not (blue).  
+To assign values to the correspondence between the predictor variables and permeability, we calculated the Pearson's r and Kendall tau values (Table 1).
+
+Table 1. Pearson r and Kendall tau values for correlation between predictor variables and permeability. The data is split between modes of the porosity distribution, based on whether the porosity is greater than 5 p.u. or not. Tortuosity is calculated after taking cementation into account, specific surface area is calculated without including cementation.
+```{r correlations}
+df2 <- data.table::as.data.table(df)[,list(Permeability = KLH, 
+                                           `Carman-Kozeny void fraction` = CK_void_fraction, 
+                                           Tortuosity=tau_e, 
+                                           `Specific surface area`=a_u, 
+                                           `Pore-bridging cement`=P_b, 
+                                           `Pore-filling cement`=P_f,
+                                           `Porosity group`=porosity_group)]
+
+
+df2 %>%
+  melt(measure.vars = c("Carman-Kozeny void fraction", "Tortuosity","Specific surface area", "Pore-bridging cement", 
+                        "Pore-filling cement")) %>%
+  group_by(variable, `Porosity group`) %>%
+  dplyr::summarize(`Pearson r` = round(cor(Permeability, value),2), 
+                   `Kendall tau` = round(cor(Permeability, value, method = "kendall"), 2)) %>%
+  melt(measure.vars = c("Pearson r", "Kendall tau"), variable.name = "Correlation") %>%
+  dcast(`Porosity group` + Correlation ~ variable ) %>%
+  kable(format="pandoc") #%>%
+  #kable_styling()
+```
+
+The correlations between predictor variables and the permeability take on different values depending on whether the porosity is high or low. The correlations are consistently lower at low porosty.
+
+### Model results
+We tested the accuracies and correlations between the physics-based and regression-based models and the measured permeability. There were three physics-based models of increasing complexity: First, we used a Carman-Kozeny model where we assumed the grains were monodisperse. Then, we used the Carman-Kozeny model that took the grain size distribution and compaction into effect, and finally, a model that took cement's effect on tortuosity into effect.  
+
+```{r physics_based, fig.width=7, fig.height=5}
+reg_plot <- function(df, kpred){
+  kpred <- enquo(kpred)
+  p <- 
+    ggplot(df, aes(KLH, !!kpred, color = porosity_group)) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    scale_x_log10("Actual permeability (mD)", breaks = c(0.1, 1, 10, 100, 1000, 10000), 
+                  labels = c(0.1, 1, 10, 100, 1000, 10000)) +
+    scale_y_log10("Predicted perm (mD)") +
+    annotation_logticks(sides = "bl") +
+    scale_color_manual("Porosity\ngroup", values = c("peru","steelblue"))
+  
+  p
+}
+
+p1 <- df %>%
+  reg_plot(CK_void_fraction / (2 * tau_o * a_o^2)) +
+  labs(title = "Monodisperse")
+
+p2 <- df %>%
+  reg_plot(k_pl94_impor) +
+  labs(title = "Including compaction")
+
+p3 <- df %>%
+  reg_plot(CK_void_fraction / (2 * tau_e * a_e_sorta^2)) +
+  labs(title = "Including cementation")
+
+ggarrange(p1,p2, p3, common.legend = TRUE, labels = "auto", legend = "right")
+```  
+
+Figure 3. Comparisons of physics-based models to measured permeability. a) Uses the Carman-Kozeny void fraction and the initial tortuosity and specific surface area expected from an uncompacted, monodisperse particle assemblage of the measured porosity and grain size. b) Considers compaction with the Panda-Lake (1994) model. c) Considers the impacts of compaction and cementation on the tortuosity, following the Panda-Lake (1995) model.
+
+
+Two regression-based models were tested: A linear model using a Winland-style equation of the form
+$$\ln k \propto \ln \phi_{CK} + \ln a_u + \ln \tau_e + \ln P_b + \ln P_f, $$
+and a gradient boosting model using the same predictor variables, but assuming no particular functional form between the variables and permeability.
+
+```{r enet_training}
+#, fig.width=5, fig.height=3
+cl <- makePSOCKcluster(12)
+registerDoParallel(cl)
+
+## Elastic-net
+grid_enet_lp <- expand.grid(
+  alpha = seq(0, 1, length = 50),
+  lambda = seq(0.0, 0.01, length = 6)
+)
+
+fit_enet_lp <- train(
+  KLH ~ CK_void_fraction + a_u + tau_e + P_b + P_f,
+  data = train_lp,
+  method = 'glmnet',
+  trControl = fit_control_lp,
+  tuneGrid = grid_enet_lp
+)
+
+##ggplot(fit_enet_lp)
+
+grid_enet_hp <- expand.grid(
+  alpha = seq(0, 1, length = 50),
+  lambda = seq(0.15, 0.2, length = 6)
+)
+
+fit_enet_hp <- train(
+  KLH ~ CK_void_fraction + a_u + tau_e + P_b + P_f,
+  data = train_hp,
+  method = 'glmnet',
+  trControl = fit_control_hp,
+  tuneGrid = grid_enet_hp
+)
+
+#ggplot(fit_enet_hp)
+```
+
+
+
+
+
+
+
+```{r xgboost_training}
+## XGBoost
+cl <- makePSOCKcluster(12)
+registerDoParallel(cl)
+
+grid_lp <- expand.grid(
+  nrounds = 700, #seq(100, 2000, by = 20),
+  eta = 0.02,
+  max_depth = 1,
+  gamma = 0,
+  colsample_bytree = 0.78,
+  min_child_weight = 7,
+  subsample = 1
+)
+
+fit_xgboost_lp <- train(
+  logk ~ CK_void_fraction + tau_e + P_b + P_f,
+  data = df_lowphi,
+  method = 'xgbTree',
+  trControl = fit_control_lp,
+  tuneGrid = grid_lp
+)
+#ggplot(fit_xgboost_lp)
+#fit_xgboost_lp$results %>% arrange(RMSE)
+
+grid_hp <- expand.grid(
+  nrounds = seq(40, 500, by = 10),
+  max_depth = 1,
+  eta = 0.015,
+  gamma =  0.94,
+  colsample_bytree = 0.69,
+  min_child_weight = 7,
+  subsample = 0.23
+)
+
+fit_xgboost_hp <- train(
+  logk ~ CK_void_fraction + tau_e + P_b + P_f,
+  data = df_highphi,
+  method = 'xgbTree',
+  trControl = fit_control_hp,
+  tuneGrid = grid_hp
+)
+##ggplot(fit_xgboost_hp)
+##fit_xgboost_hp$results %>% arrange(RMSE)
+```
+
+```{r model_results, fig.height=5.5, fig.width=7}
+
+p1 <- 
+  bind_rows(
+  df_lowphi %>%
+  mutate(
+    Linear = exp(predict(fit_enet_lp,train_lp)),
+    XGBoost = exp(predict(fit_xgboost_lp,.))),
+  df_highphi %>%
+    mutate(
+      Linear = exp(predict(fit_enet_hp,train_hp)),
+      XGBoost = exp(predict(fit_xgboost_hp, .)))
+  )%>%
+  gather("Model","k_pred", Linear, XGBoost ) %>%
+  ggplot(aes(x = KLH, y = k_pred, color = porosity_group)) + 
+  facet_wrap(~Model) +
+  geom_point() +
+  geom_abline(slope=1,intercept=0) +
+  scale_color_manual("Porosity\ngroup",values = c("peru", "steelblue")) +
+  annotation_logticks(sides = "bl") +
+  scale_x_log10("Measured permeability (mD)", 
+                breaks = c(0.1, 1, 10, 100, 1000),
+                labels = c(0.1, 1, 10, 100, 1000)
+                ) +
+  scale_y_log10("Predicted permeability (mD)") 
+
+#p1
+p2 <- 
+bind_rows(
+  df_lowphi %>%
+  mutate(
+    Linear = resid(fit_enet_lp,train_lp),
+    XGBoost = resid(fit_xgboost_lp,.)),
+  df_highphi %>%
+    mutate(
+      Linear = resid(fit_enet_hp,train_hp),
+      XGBoost = resid(fit_xgboost_hp, .))
+  )%>%
+  gather("Model","residual", Linear, XGBoost ) %>%
+  ggplot(aes(x = KLH, y = residual, color = porosity_group)) + 
+  facet_wrap(~Model) +
+  geom_point() +
+  geom_abline(slope=0,intercept=0) +
+  scale_color_manual("Porosity\ngroup",values = c("peru", "steelblue")) +
+  annotation_logticks(sides = "b") +
+  scale_x_log10("Measured permeability (mD)", 
+                breaks = c(0.1, 1, 10, 100, 1000),
+                labels = c(0.1, 1, 10, 100, 1000)
+                ) +
+  scale_y_continuous("Residual in prediction (ln mD)") 
+
+#p2
+ggarrange(p1, p2, ncol =1, common.legend=TRUE, legend = "right", labels ="auto")
+
+
+```
+
+Figure 4. a) Predicted versus measured permeability using the linear and XGBoost models. b) Residauls in the predictions for the linear and XGBoost models. Color indicates whether the sample is in the high (greater than 5%) or low porosity group.
+
+```{r winland_feature_importance, fig.width=5, fig.height=3}
+importance_lp <- varImp(fit_enet_lp)$importance
+importance_hp <- varImp(fit_enet_hp)$importance
+importances <- as.data.frame(cbind( rownames(importance_lp), importance_lp, importance_hp))
+importances[,1] = c("Carman-Kozeny void fraction", "Specific surface area", "Tortuosity","Pore-bridging cement", "Pore-filling cement")
+colnames(importances) <- c("Feature", "Low", "High")
+importances <- importances %>%
+  gather("Low", "High", key="Porosity group", value="Importance")
+ggplot(importances, aes(Feature, Importance, fill = `Porosity group`)) +
+  geom_bar(stat="identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("peru", "steelblue"))
+
+predictor = Predictor$new(fit_enet_lp, data = select(df, CK_void_fraction, tau_e, P_b, P_f, a_u), y = log(df$KLH))
+imp = FeatureImp$new(predictor, loss = "rmse", n.repetitions = 40)
+```
+
+Figure 5. Feature importance for the linear model. color indicates whether the model was trained on high (greater than 5%) or low porosity samples. No bar indicates that the regularization procedure caused the weight for that feature to reach zero.
+
+```{r xgboost_feature importance}
+shaps_lp <- xgb.plot.shap(as.matrix(select(df_lowphi, CK_void_fraction, tau_e, P_b, P_f)), 
+                       model=fit_xgboost_lp$finalModel, 
+                       top_n=4, plot = FALSE)
+
+shaps_hp <- xgb.plot.shap(as.matrix(select(df_highphi, CK_void_fraction, tau_e, P_b, P_f)), 
+                       model=fit_xgboost_hp$finalModel, 
+                       top_n=4, plot = FALSE)
+
+data <- rbind(merge(melt(shaps_lp$shap_contrib, value.name="SHAP"),
+              melt(shaps_lp$data, value.name="Value")
+                    ) %>%
+                mutate(`Porosity group`="Low"),
+              merge(melt(shaps_hp$shap_contrib, value.name="SHAP"),
+              melt(shaps_hp$data, value.name="Value")
+                    ) %>%
+                mutate(`Porosity group`="High")
+)
+
+
+ggarrange(
+ggplot(filter(data, Var2=="CK_void_fraction"), aes(x=Value, y = SHAP, color=`Porosity group`)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_color_manual(values = c("peru","steelblue")) +
+  labs(x = TeX("Void fraction, $\\phi_{CK}"))
+,
+ggplot(filter(data, Var2=="tau_e"), aes(x=Value, y = SHAP, color=`Porosity group`)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_color_manual(values = c("peru","steelblue")) +
+  labs(x = TeX("Tortuosity, $\\tau_e"))
+,
+ggplot(filter(data, Var2=="P_f"), aes(x=Value, y = SHAP, color=`Porosity group`)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_color_manual(values = c("peru","steelblue")) +
+  labs(x = TeX("Pore-filling cement, $P_f"))
+,
+ggplot(filter(data, Var2=="P_b"), aes(x=Value, y = SHAP, color=`Porosity group`)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_color_manual(values = c("peru","steelblue")) +
+  labs(x = TeX("Pore-bridging cement, $P_b$"))
+,
+nrow = 2, ncol = 2, common.legend = TRUE)
+```
+
+Figure 6. Feature importance for the gradient boosting model, using SHAP. SHAP values show how much each element contributes to each prediction from the gradient boosting model. Orange dots show high porosity samples, while blue samples indicate low porosity samples.
+
+Table 2. Measures of model fitness for the XGBoost and linear models on the high porosity and low porosity groups for the training and testing data.
+```{r model_fitness}
+
+model_fitness <- 
+  rbind(
+    postResample(log( predict(fit_xgboost_lp, df_lowphi)), log(df_lowphi$KLH)),
+    postResample(log( predict(fit_xgboost_lp, df_holdout_lp)), log(df_holdout_lp$KLH)),
+    
+    postResample(log( predict(fit_xgboost_hp, df_highphi)), log(df_highphi$KLH)),
+    postResample(log( predict(fit_xgboost_hp, df_holdout_hp)), log(df_holdout_hp$KLH)),
+    
+    postResample(log( predict(fit_enet_lp, train_lp)), (train_lp$KLH)),
+    postResample(log( predict(fit_enet_lp, test_lp)), (test_lp$KLH)),
+    
+    postResample(log( predict(fit_xgboost_hp, train_hp)), (train_hp$KLH)),
+    postResample(log( predict(fit_xgboost_hp, test_hp)), (test_hp$KLH))
+  ) %>%
+  as_tibble() %>%
+  round(2)
+
+model_fitness$Model <- c("XGBoost","XGBoost","XGBoost","XGBoost",
+                         "Linear","Linear","Linear","Linear")
+model_fitness[,"Porosity group"] <- c("Low","Low","High","High",
+                         "Low","Low","High","High")
+model_fitness[,"Data"] <- c("Train","Test","Train","Test",
+                         "Train","Test","Train","Test")
+
+kable(model_fitness[,c("Model", "Porosity group","Data","RMSE","MAE","Rsquared")],
+      format="pandoc") #%>%
+  #kable_styling()
+```
+
+
+
+## Discussion
+
+## Conclusions
+This paper has the makings of greatness.
+
+## Appendix A. Derivation of a modified Carman-Kozeny equation for uncemented sandstones
+This section follows the derivation laid out by Panda and Lake (1994).
+
+We start with the Carman-Kozeny equation 
+$$k = \frac{\phi^3}{2\tau(1-\phi)^2 a^2},$$
+where  permeability is $k$,  porosity is $\phi$, tortuosity is $\tau$, and the specific surface area is $a$. For porosity, we use the porosity to Helium that has been measured on the Garn data. Permeability is air permeability that has been corrected for Klinkenberg effects. In order to measure tortuosity and specific surface area, we have measurements of the median grain size and Trask sorting coefficient, following the approach proposed by Beard and Weyl (1973). Skewness of the distribution of grain sizes can be extracted from these parameters. 
+
+Given this information, a modified Carman Kozeny equation following Panda and Lake (1994) is
+$$k = \frac{\bar{D}^2 \phi^3}{72\tau_u \left(1-\phi \right)^2} \frac{\left(\gamma C_D^3 + 3C_D^2 +1 \right)^2}{\left(1+C_D^2\right)^2},$$
+where $\bar{D}$ is the mean particle size, $C_D$ is the coefficient of varation of the particle size distribution ($C_D=\sigma_D/\bar{D}$), $\gamma$ is the skewness of the particle size distribution. and $\tau_u$ is the tortuosity of an unconsolidated, uncemented sand.
+
+Panda and Lake (1994) do not calculate the original tortuosity. However, there has been a wealth of work on this problem in the physics, soil, and petroleum literature. One approach is proposed by Ghanbarian, et al. (2013). This approach makes use of percolation theory and results in tortuosity following a power law with respect to porosity. Taking their equation 8 (which assumes reasonably well-sorted grains and a large system) and plugging in the relevant numbers, original tortuosity follows the equation
+\begin{align}
+\tau_o &= \left(\frac{\phi - \phi_t}{1 - \phi_t} \right)^{\nu(1-D)} \\
+ &= \left(\frac{0.9\phi}{1-0.1\phi} \right)^{-0.378}
+ \end{align}
+Panda and Lake (1995) use a surface area argument to derive the effective tortuosity for an uncemented sandstone of different size particles, which is
+$$\tau_u = \tau_o \left(1 + C_D^2 \right).$$
+
+
+<!-- The tortuosity for a sand bed where grain size follows a normal distribution is  -->
+<!-- \begin{equation} -->
+<!-- \tau_u = 2.5\left(1 + C_D^2 \right). -->
+<!-- \end{equation} -->
+
+
+
+Next, let's look at the distribution of the distribution measures, $\bar D,\ C_D$, and $\gamma$:
+```{r distribution, warning=FALSE}
+
+
+ggarrange(
+
+ggplot(df, aes(sample=GS)) +
+  geom_qq() +
+  scale_y_log10()+#limits=c(,1)) +
+  labs(x = "Theoretical quantile",y="Median grain size (micron)"),
+
+ggplot(df, aes(sample=SO)) +
+  geom_qq() +
+  scale_y_continuous(limits = c(1,2)) +
+  #scale_y_log10(limits= c(1,3))
+  labs(x = "Theoretical quantile", y="Trask sorting coefficient"),
+ncol = 2, nrow=1)
+
+ggarrange(
+ggplot(df, aes(sample=mean_GS)) +
+  geom_qq() +
+  scale_y_log10() +
+  labs(x = "Theoretical quantile",y="Mean grain size (micron)"),
+
+ggplot(df, aes(sample=Cv_GS)) +
+  geom_qq() +
+  scale_y_log10() +
+  labs(x = "Theoretical quantile",y=TeX("$C_v$ of grain size")),
+
+ggplot(df, aes(sample=gamma_GS)) +
+  geom_qq() +
+  scale_y_log10() +
+  labs(x = "Theoretical quantile",y=TeX("$\\gamma$ of grain size")),
+
+ggplot(df, aes(sample=tau_u)) +
+  geom_qq() +
+  scale_y_log10() +
+  labs(x = "Theoretical quantile",y="Tortuosity before cementation"),
+ncol = 2, nrow = 2)
+
+```
+
+<!-- Now, how well did it work? -->
+
+<!-- ```{r panda_lake_1994, warning=FALSE} -->
+<!-- #df <- mutate(df,  -->
+<!-- #             k_pl94 = (mean_GS^2 * POR^3)/(72* tortuosity_u) * (gamma_GS * Cv_GS^3 + 3*Cv_GS^2 + 1)^2/(1 + Cv_GS^2)^2) -->
+
+<!-- ggplot(df,aes(x=k_pl94_por, y=KLH) ) + -->
+<!--   geom_point() + -->
+<!--   geom_smooth(method="rlm", color="steelblue") + -->
+<!--   geom_abline(slope=1, intercept=0, color="peru") + -->
+<!--   scale_x_log10("Predicted permeability before cementation (mD)", breaks = c(1,10,100,1000,10000, 100000)) + -->
+<!--   scale_y_log10("Measured permeability (mD)", limits=c(0.1,2e3), breaks = c(1,10,100,1000,10000))  -->
+
+<!-- ggplot(df,aes(x=k_pl94_impor, y=KLH) ) + -->
+<!--   geom_point() + -->
+<!--   geom_smooth(method="rlm", color="steelblue") + -->
+<!--   geom_abline(slope=1, intercept=0, color="peru") + -->
+<!--   scale_x_log10("Predicted permeability before cementation using interparticle macroporosity (mD)") + #, breaks = c(1,10,100,1000,10000, 100000)) + -->
+<!--   scale_y_log10("Measured permeability (mD)", limits=c(0.1,2e3), breaks = c(1,10,100,1000,10000))  -->
+
+<!-- summary( -->
+<!--   rlm(log(KLH) ~ log(k_pl94_por), df) -->
+<!-- ) -->
+<!-- cor.test(df$k_pl94_por,df$KLH, method='spearman' )$estimate**2 -->
+<!-- ``` -->
+
+## Appendix B: Derivation of Carman-Kozeny corrections for cemented sandstones
+This section follows the derivation laid out by Panda and Lake (1995).
+
+Carman-Kozeny theory does not consider the effect of cementation on permeability, but we know that cement is present in these rocks, and that it blocks flow paths, decreasing the permeability. In terms of the quantities considered by Carman and Kozeny, this changes the tortuosity and the specific surface area. There are several different cements that could be present, and they are measured through point counting.
+
+Panda and Lake (1995) separate cement types into three categories: pore-filling, pore-lining, and pore-briding, following Neasham (1997). Where cements associate with the pores depends on the thermodynamic properties of the cementing material. Crystal-like kaolinite and dickite cements are pore-filling. Other pore-filling cements include quartz, feldspar, dolomite, and calcite. These cements affect the porosity, but because they do not affect the pore throats or the pore shape, under this model they have a small effect on permeability.
+
+Pore-lining cements find it energetically favorable to form long crystals that stretch out from the grains. These cements include the non-kaolinite clay minerals, such as chlorite, illite, and smectite. The long crystals affect permeability more than they affect porosity because of the large surface areas they generate.
+
+Pore-bridging cements can partially or completely block the pore throats. This strongly influences the permeability, increasing the tortuosity of the system and decreasing the connectivity. Examples of the minerals that bridge pores include illite, chlorite, and montmorillonite (the non-Kaolin clay minerals).
+
+After cementation, the tortuosity and specific surface area has changed. Panda and Lake (1995) suggest an effective tortuosity, $\tau_e$, given by
+$$\tau_e = \tau_u \left(1+C_D^2 \right)\left(1+\frac{Rm_b}{1-m_b} \right)^2 \left(1 + \frac{2m}{(1-m) \phi^{1/3}} \right)^2,$$
+where $R$ is a constant equal to 2 indicating the additional distance traveled by the fluid as a function of the thickness of cementation. The volume fraction of pore-bridging cement is $m_b = P_b(1-\phi)/\phi$, and the volume fraction of pore-filling cement is $m = P_f (1-\phi)/\phi$. 
+
+For an unconsolidated sand of variable sizes, the specific surface area is
+$$a_u = \frac{6(\sigma^2 + \bar{D}^2)}{\gamma \sigma^3 + 3\bar{D}\sigma^2 + \bar{D}^3}$$
+After cementation, the effective specific surface area follows the equation
+$$a_e = a_u \frac{1-\phi_u}{1-\phi} + a_b P_b + a_f P_f$$
+where $a_u$ is the specific surface area for an unconsolidated, uncemented sand, $\phi_u$ is the porosity of an unconsolidated sand, $a_b$ is the specific surface area for a pore-bridging cement, $a_f$ is the specific surface area for a pore-filling cement, and $P_b,P_f$ are the relative fractions of pore-bridging and pore-filling cement, respectively.
+
+Taking these equations together, the equation for permeability becomes
+$$k = \left[\bar{D}^2 \phi^3 \left(\gamma C_D^3 + 3C_D^2 + 1 \right)^2 \right]
+ \left\{ 2\tau_e (1-\phi)^2 \left[ 6\left(1+C_D^2 \right) \frac{1-\phi_u}{1-\phi} + 
+ \left(a_b P_b + a_f P_f \right) \bar{D} \left(\gamma C_D^3 + 3C_D^2 +1 \right) \right]^2\right\}^{-1}$$
+
+Now, with these calculations, the properties of the grain size distribution measured by Ehrenberg (1990) can be used to test the theory derived by Panda and Lake (1995).
+
+<!-- \begin{align} -->
+<!-- k &= \left[\bar{D}^2 \phi^3 \left(3C_D^2 + 1 \right)^2 \right]\\ -->
+<!--  &\left\{ 2\tau_e (1-\phi)^2 \left[ 6\left(1+C_D^2 \right) \frac{1-\phi_u}{1-\phi} +\right.\right.\\ -->
+<!--  &\left.\left. \left(a_b P_b + a_f P_f \right) \bar{D} \left(3C_D^2 +1 \right) \right]^2\right\}^{-1} -->
+<!-- \end{align} -->
+
+First, let's look at the distributions of tortuosity and effective specific surface area.
+
+```{r distributions_cementation}
+#df <- df %>%
+#  mutate(POR = POR/100,
+         # mu = log(GS),
+         # sigma = log(SO) / (sqrt(2) * erfinv(0.5)),
+         # mean_GS = exp( mu + sigma/2),
+         # Cv_GS = sqrt( exp( sigma^2) - 1),
+         # gamma_GS = (exp(sigma^2) + 2) * Cv_GS,
+         # tortuosity_u = 2.5 * (1+Cv_GS)
+         # )
+
+# df <- df %>%
+#   mutate(P_f = (KAO + QCM + CAL + DOL)/100,
+#          P_b = ICL/100,
+#          POR_u = POR + P_f + P_b,
+#          m = P_f * (1-POR)/POR,
+#          m_b = P_b * (1-POR)/POR,
+#          tau_e = tortuosity_u * (1+Cv_GS) * (1+ 2*m_b/(1-m_b))^2 * (1 + 2*m/((1-m) * POR^(1/3.0)))^2,
+#          a_u = 6* (sigma^2 + mean_GS^2)/(gamma_GS * sigma^2 + 3*mean_GS*sigma^2 + mean_GS^3),
+#          a_e_sorta = a_u * (1 - POR_u)/(1-POR) #+ a_b*P_b + a_f*P_f
+#          )
+```
+
+
+## Appendix C
+### Lognormal distribution statistics
+Here we relate median grain size and the Trask Sorting Coefficient ($S_o$) to the mean, standard deviation, and skewness of the grain size distribution. From the mean and standard deviation, the coefficient of variation, $C_v = \bar{D}/\sigma$, can be calculated.
+
+Grain size distribution is often described by the median grain size and the Trask Sorting Coefficient ($S_o$), which is defined by $S_o=\sqrt{D_{0.75}/D_{0.25}}$, where $D_p$ is the quantile value indicated by $p$, such that $D_{0.25}$ is the 25%-ile grain size. Panda (1994, Appendix B) derived an equation relating average grain size, Trask Sorting Coefficient, and the standard deviation of the grain size, which is
+\begin{equation}
+\sigma = \bar{D} \frac{S_o^2-1}{0.675\left(S_o^2+1\right)}.
+\end{equation}
+This equation is done through $D_p$ being calculated in a $\log_2$ space, but most calculations of $S_o$ use the definition I provided above, so this should be re-derived.
+
+According to my derivation, assuming lognormality, following a distribution with the PDF
+\begin{equation}
+\frac{1}{x\sigma\sqrt{2\pi}} \exp\left(-\frac{(\ln x-\mu)^2}{2\sigma^2} \right),
+\end{equation}
+the mean grain size is $\bar{D} = \exp(\mu + \sigma/2)$, and in terms of the median and Trask sorting coefficient, the parameters of the distribution are
+$$\begin{align}
+\mu &= \ln D_{0.5}\\
+\sigma &= \frac{\ln S_o}{\sqrt{2}\ \text{erf}^{-1}(0.5)}
+\end{align}$$
+
+Okay, let's test those stats with a randomly generated lognormal distribution:
+```{r lognormal_stats, echo=TRUE}
+mu <- 3.14159
+sigma <- 1
+d <- rlnorm(10000, mu, sigma) # distribution of 1k points with mu=10, sigma=1
+
+trask <- sqrt(quantile(d,0.75) / quantile(d,0.25))
+d_50 <- median(d)
+mu_calc <- log(d_50)
+erfinv <- function(x) qnorm((x + 1)/2)/sqrt(2)
+sigma_calc <- log(trask) / (sqrt(2) * erfinv(0.5))
+mean_calc <- exp(log(d_50) + sigma_calc/2)
+exponent_thingie <- (2*sqrt(2) * erfinv(0.5))
+
+cat(
+  "\nThe median is", round(median(d),1),
+       "It should be", round(exp(mu),1),
+      "\nThe mean is",round(mean(d),1),
+      "It should be", round(exp(mu + sigma/2),1),
+      "\nThe standard deviation is",round(sd(d),1),
+      "It should be",round( sqrt( (exp(sigma^2)-1) * exp(2*mu+sigma^2))),
+      "\nThe Trask sorting coefficient is",round(sqrt(quantile(d,0.75) / quantile(d,0.25)),2),
+  "\nFrom the Trask and median diameters, the mean should be", round(mean_calc,1),"or",
+  round(d_50 * trask^(1/(2*sqrt(2) * erfinv(0.5))),1),
+  "\nThis is a deviation of", round((exp(mu + sigma/2) - mean_calc)/exp(mu + sigma/2)*100,1),"percent\n"
+      
+)
+```
+
+The mean grain size can be calculated from the median grain size and standard deviation through the equation (assuming a lognormal distribution of the grain size). In addition, the coefficient of variation and skewness can be calculated. The equations for these terms are
+$$\begin{align}
+\bar{D} &= \exp \left[ \ln(D_{\text{0.5}}) + \sigma/2 \right] &
+        &= D_{0.5} S_o^{1/{(2\sqrt{2}\ \text{erf}^{-1}(0.5)})} &
+        &= D_{0.5} S_o^{1.349}\\
+C_D &= \sqrt{e^{\sigma^2}-1} &
+    &= \sqrt{e^{2.198(\ln S_o)^2} -1} & \\
+\gamma &= \left(e^{\sigma^2} + 2\right) \sqrt{e^{\sigma^2}-1} &
+       &= \left(e^{\sigma^2} + 2\right) C_D  &\\
+       &= \left( e^{2.198(\ln S_o)^2} + 2\right)\sqrt{e^{2.198(\ln S_o)^2} -1}
+\end{align}$$

@@ -1,0 +1,237 @@
+---
+title: "Clastics machine learning"
+author: "Frank Male"
+date: "July 30, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+require(XLConnect)
+require(tidyverse)
+require(qqplotr)
+require(ggpubr)
+require(latex2exp)
+require(janitor)
+require(caret)
+require(recipes)
+require(iml)
+require(reshape2)
+#library(ggtern)
+
+df <- readWorksheetFromFile("C:/Users/malef/Dropbox/ROZ/data/GARN1990.xlsx", sheet=1) %>%
+  mutate_at(vars(CD:IMP), ~ as.numeric(.)) %>%
+  mutate(WELL = str_trim(WELL)) %>%
+  select(-CHT)
+
+df_name <-readWorksheetFromFile("C:/Users/malef/Dropbox/ROZ/data/GARN1990.xlsx", sheet=2) %>%
+  rename(Var1=EXPLANATION.,explanation=Col2)
+
+figdir <- "figures/"
+```
+
+```{r feature_selection}
+z <- df %>%
+  select(POR,GD:IMP) %>%
+  cor(df$KLH, use="complete.obs",method="spearman")
+z <- z[order(-z),1]
+(z <- z[abs(z)>.5])
+
+fig <- df %>%
+  select(KLH, names(z))%>%
+  cor(use="complete.obs", method="spearman") %>%
+  melt(na.rm = TRUE) %>%
+  ggplot(aes(x=Var2, y=Var1, fill=value)) +
+  geom_tile(color='white') +
+  #scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+  # midpoint = 0, limit = c(-1,1), space = "Lab", 
+  #  name="Spearman\nCorrelation") +
+  scale_fill_distiller("Spearman\nCorrelation", palette="RdBu",limit=c(-1,1)) +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 10, hjust = 1))+
+ coord_fixed() + 
+  labs(x="", y="")
+print(fig)
+```
+
+```{r preprocess}
+
+### Data prep
+# select factors that were ID'd in feature evaluation
+df2 <- df %>%
+  select(KLH, names(z), WELL) %>%
+  drop_na(KLH)
+
+# look for NA's
+summary(df2)
+
+# Remove the factors that have too many NA's
+df2 <- df2 %>%
+  select(-BA, -U, -CXILS) %>%
+  drop_na()
+
+# Quick look at what's left
+paste(nrow(df2),"Rows")
+
+### Test-train split
+#Find a well or two responsible for ~15% of the data
+xtabs(~df2$WELL)
+testwells <- c("6407/6-3","6506/12-4","6507/7-4")
+training <- df2 %>% filter(!WELL %in% testwells)
+testing <- df2 %>% filter(WELL %in% testwells)
+```
+
+```{r}
+set.seed(4)
+
+fit_control <- trainControl(index = groupKFold(training$WELL))
+
+enetGrid <- expand.grid(lambda = seq(0.2,.5, by=0.05),
+                        alpha = seq(0, 1, length = 21))
+
+rec_obj <- recipe(KLH ~ ., data=select(training,-WELL)) %>%
+  step_log(KLH) %>%
+  step_BoxCox(all_predictors()) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors()) %>%
+  prep(training=training, retain=TRUE)
+train_baked <- bake(rec_obj, training)
+test_baked <- bake(rec_obj, testing)
+
+fit_enet <- train(
+  KLH ~ .,
+  data = train_baked,
+  method = 'glmnet',
+  trControl = fit_control,
+  tuneGrid = enetGrid
+)
+ggplot(fit_enet)
+head(fit_enet$results %>% arrange(RMSE))
+```
+
+```{r xgboost}
+# Hyperparameter tuning following: https://www.kaggle.com/pelkoja/visual-xgboost-tuning-with-caret
+library(doParallel)
+cl <- makePSOCKcluster(12)
+registerDoParallel(cl)
+
+train_baked2 <- training %>%
+  mutate(KLH=log(KLH)) %>% # No normalization for predictors (since we're doing trees)
+  select(-WELL)
+test_baked2 <- testing  %>%
+  mutate(KLH=log(KLH)) %>% # No normalization for predictors (since we're doing trees)
+  select(-WELL)
+
+xgbGrid <- expand.grid(nrounds = seq(20, 100, by=5),
+                       max_depth = 3,
+                       eta = 0.14,#seq(.10,.16, by=.01),
+                       gamma = 0.54, #seq(0.5,0.6, length.out = 6),
+                       colsample_bytree = 1, #seq(0.4, 1.0, by=0.2),
+                       min_child_weight = 1,
+                       subsample = 1 #c(0.5,0.75,1.0)
+                       )
+
+fit_xgboost <- train(
+  KLH ~ .,
+  data = train_baked2,
+  method = 'xgbTree',
+  trControl = fit_control,
+  tuneGrid = xgbGrid
+)
+ggplot(fit_xgboost)
+
+head(fit_xgboost$results %>% arrange(RMSE),15)
+
+preds_train <- predict(fit_xgboost, train_baked2)
+preds_test <- predict(fit_xgboost, test_baked2)
+postResample(preds_train, train_baked2$KLH)
+postResample(preds_test, test_baked2$KLH)
+
+train_baked2 %>%
+  mutate(KLH_pred = exp(predict(fit_xgboost,.)),
+         KLH = exp(KLH)) %>%
+  ggplot(aes(KLH,KLH_pred)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0)
+  scale_x_log10() + scale_y_log10() +
+  labs(x="Permeability (mD)", y="Predicted permeability (mD)")
+
+test_baked2 %>%
+  mutate(KLH_pred = exp(predict(fit_xgboost,.)),
+         KLH = exp(KLH)) %>%
+  ggplot(aes(KLH,KLH_pred)) +
+  geom_point() +
+  scale_x_log10() + scale_y_log10() +
+  labs(x="Permeability (mD)", y="Predicted permeability (mD)")
+```
+```{r shapley_xgboost}
+library(xgboost)
+
+shaps <- xgb.plot.shap(as.matrix(train_baked2)[,2:ncol(train_baked2)], model=fit_xgboost$finalModel, 
+              top_n=8, n_col=2, pch="o")
+
+
+data <- merge(melt(shaps$shap_contrib, value.name="SHAP"),
+              melt(shaps$data, value.name="Value")
+) %>%
+  merge(df_name, by.x = "Var2", by.y ="Var1")
+explan_order <- data %>% 
+  dplyr::group_by(explanation) %>% 
+  summarise(max=max(abs(SHAP))) %>% 
+  arrange(max)
+data$explanation <- factor(data$explanation, levels=explan_order$explanation)
+
+ggplot(data,aes(x=SHAP,y=explanation, color=Value)) +
+  geom_jitter() +
+  #scale_color_distiller(palette="Reds") +
+  scale_color_viridis_c(option="plasma") +
+  labs(x="SHAP value", y="Feature")
+ggsave(paste0(figdir,"shapley_plot_XGB.png"),height=3,width=8)
+
+data %>%
+  filter(explanation %in% explan_order$explanation[5:8]) %>%
+  mutate(explanation = factor(explanation, levels=explan_order$explanation[8:5])) %>%
+  ggplot(aes(x=Value, y=SHAP)) +
+  facet_wrap(~explanation, scales="free_x",ncol=2) +
+  geom_point(color="peru")
+ggsave(paste0(figdir,"SHAP_byvalue.png"), width=6.1,height=4)
+
+```
+
+
+```{r shapley_lm}
+predictor = Predictor$new(fit_enet, data = train_baked %>% select(-KLH), y = train_baked$KLH)
+imp = FeatureImp$new(predictor, loss = "rmse", n.repetitions = 40)
+plot(imp) +
+  scale_x_continuous("Feature importance (RMSE without feature / RMSE)") +
+  geom_vline(xintercept = 1.0)
+
+explainer <- Shapley$new(predictor, x.interest = select(train_baked,-KLH)[1,])
+plot(explainer)
+shapley <- explainer$results
+for (n in 2:nrow(train_baked)){
+  explainer$explain(select(train_baked,-KLH)[n,])
+  shapley <- rbind(shapley, explainer$results)
+}
+
+colnames(df_name)
+shapley$feature.value2 <-  as.numeric(str_match(shapley$feature.value,"=(.*$)")[,2])
+shapley <- merge(shapley,df_name, by.x = "feature", by.y ="Var1")
+
+explan_order <- shapley %>% 
+  dplyr::group_by(explanation) %>% 
+  summarise(max=max(abs(phi))) %>% 
+  arrange(max)
+
+shapley$explanation = factor(shapley$explanation, levels=explan_order$explanation)
+
+#head(shapley$feature.value2)
+ggplot(shapley,aes(x=phi,y=explanation, color=feature.value2)) +
+  geom_jitter() +
+  scale_color_distiller("Value",palette = "RdBu") +
+  labs(x="Shapley value", y="Feature")
+ggsave(paste0(figdir,"shapley_plot.png"),height=3,width=8)
+
+```
+
