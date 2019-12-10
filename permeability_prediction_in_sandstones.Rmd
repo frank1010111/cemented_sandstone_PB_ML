@@ -129,49 +129,52 @@ fit_control_hp <- trainControl(index = groupKFold(train_hp$WELL),
 ## Abstract
 
 ## Introduction
-Sandstones one of the most common types of reservoir rocks. Therefore, it is of great interest to predict the reservoir properties of sandstones. In this paper, we will focus on explaining the factors that influence sandstone permeability.  
-Two approaches are available for permeability prediction of sandstones: 1) a physics-based approach based on the Carman-Kozeny equation and 2) a machine learning approach that assumes no particular physical laws linking predictors and permeability. We will apply a hybrid approach that considers both the physical intuition encapsulated in the Carman-Kozeny equation and data-centric methods.  
+Sandstone  is one of the most common types of reservoir rocks, contributing about 30% to the stratigraphic total of sedimentary rocks (Pettijohn et al., 1972, p. 4). Therefore, it is of great interest to predict the reservoir properties of sandstones. In this paper, we will focus on explaining the factors that influence sandstone permeability. 
+Two approaches are available for permeability prediction of sandstones: 1) physics-based models such as the Carman-Kozeny equation and 2) empirical models developed using statistical or machine learning tools that assume no particular physical laws linking predictors and permeability. There are a number of physics-based and empirical models; Dullien (2012) is a nice review of both model types. 
+We will apply a hybrid approach that considers both the physical intuition encapsulated in the Carman-Kozeny equation and data-centric models.  
 Kozeny (1927) and Carman (1937) developed an equation linking permeability to three factors: porosity, hydraulic tortuosity, and specific surface area.  
-Porosity and permeability are routinely measured during core analysis, but hydraulic tortuosity (as opposed to electrical tortuosity) and specific surface area are not. However, tortuosity and specific surface area arise from geologic processes that can be modeled and distributed throughout the reservoir. Therefore, understanding the magnitude and effect of proxies for tortuosity and surface area can aid in building accurate porosity-permeability transformations and applying these transformations in geomodels.  
-Panda and Lake (1994, 1995) developed a mathematical framework for estimating tortuosity and specific surface area for real rocks that had undergone diagenesis. With this framework, permeability can be predicted from the intergranular porosity, average grain diameter, grain size distribution, and fraction of various types of cements.  
-Machine learning is a tool that can be used to understand how useful proxies for tortuosity and specific surface area are for predicting permeability. With advanced non-parametric machine learning (such as the gradient boosting machine developed by Friedman, 2001), there is no requirement to assume a priori a functional form between these proxies and the predicted quantity. With the recent derivation of a consistent feature attribution system for explaining tree-based models (Lundberg et al., 2018), the functional form can be visualized after modeling.  
+Porosity and permeability are routinely measured during core analysis, but hydraulic tortuosity (as opposed to electrical tortuosity) and specific surface area are not commonly evaluated. However, tortuosity and specific surface area arise from geologic processes that can be modeled and distributed throughout the reservoir. Therefore, understanding the magnitude and effect of proxies for tortuosity and surface area can aid in building accurate porosity-permeability transformations and applying these transformations in geomodels.  
+Panda and Lake (1995) developed a mathematical framework for estimating tortuosity and specific surface area for real rocks that had undergone diagenesis. With this framework, permeability can be predicted from the intergranular porosity, average grain diameter, grain size distribution, and the amounts of various types of cements.  
+Machine learning is a tool that can be used to understand how useful proxies for tortuosity and specific surface area are for predicting permeability. With advanced non-parametric machine learning (such as the gradient boosting machine developed by Friedman, 2001), there is no requirement to assume _a priori_ a functional form between these proxies and the predicted quantity. With the recent derivation of a consistent feature attribution system for explaining tree-based models (Lundberg et al., 2018), the functional form can be visualized after modeling, helping petrophysicists understand the mechanisms controlling permeability.  
 Given the physics-based model and advanced machine learning approaches, we propose a hybrid approach, combining the best qualities of each approach.  
-In this study, we developed estimates for the permeability of the Garn sandstone reservoir (Ehrenberg, 1990), using the data from that study. We compared different methods for calculating the tortuosity and specific surface area from core description, and we found the most important determinants of porosity-permeability transforms in this case.
+In this study, we develop estimates for the permeability of the Garn sandstone reservoir (Ehrenberg, 1990), using the data from that study. We compare different methods for calculating the tortuosity and specific surface area from core description, and we find the most important determinants of porosity-permeability transforms in this case.
+
+**XXX More results**
 
 ## Methods
 ### Physical models
-The most well-known physics-based approach to estimating permeability was developed by Kozeny (1927) and later modified by Carman (1937). In its modern form, the equation is written as
+Perhaps the most well-known physics-based approach to estimating permeability was developed by Kozeny (1927) and later modified by Carman (1937). In its modern form, the equation is written as
 $$k = \frac{\phi^3}{2\tau(1-\phi)^2 a^2},$$
 which, for simplicity, we will write as
 $$k = \frac{\phi_{CK}}{2\tau a^2},$$
-where  permeability is $k$,  porosity is $\phi$, tortuosity is $\tau$, the specific surface area is $a$, and the Carman-Kozeny void fraction is $\phi_{CK}$.
+where  permeability is $k$,  porosity is $\phi$, tortuosity is $\tau$, the specific surface area is $a$, and the Carman-Kozeny void fraction is $\phi_{CK}$. 
 For an uncemented sandstone, tortuosity can be calculated following the derivation in Appendix A, which comes from Panda and Lake (1994). For a cemented sandstone (Appendix B), the tortuosity changes because of cements blocking and forcing modification of the flow paths.  
-Specific surface area for an uncemented sandstone can be estimated from the particle size distribution, after assuming that the particles are spherical. After cementation, the nature of the cement is important in how the surface area changes. Some cements will coat the walls of the pores, slightly decreasing the specific surface area. Other cements will line or bridge the pores, moderately to greatly increasing the specific surface area.  
-A competing hypothesis is that pore throat sizes are the most important determinant of permeability-porosity transforms. This appears in the Winland relations that follow the form
+Specific surface area for an uncemented sandstone can be estimated from the particle size distribution, after assuming spherical particles. After cementation, the cement distribution is important to how the surface area changes. Some cements will coat the pores walls, slightly decreasing the specific surface area. Other cements will line or bridge the pores, moderately to greatly increasing the specific surface area.  
+A competing hypothesis is that pore throat sizes are the most important determinant of permeability-porosity transforms. This hypothesis is implicitly included in the Winland relations that follow the form
 $$\ln r = A \ln k - B \ln \phi + C$$
  
-where $r$ is the pore throat radius. It is worth noting that Winland’s work focused on predicting pore throat radius (and therefore multiphase fluid flow properties) from permeability, rather than the other way around. However, in recent years, some studies have used wireline log measurements to constrain the pore throat radius in order to predict permeability (Ghanbarian et al., 2019).  
+where $r$ is the pore throat radius (see Kolodzie, 1980 and Di and Jensen, 2015). Winland’s work focused on predicting pore throat radius (and therefore two phase fluid flow properties) from permeability, rather than the other way around. However, in recent years, some studies use wireline log measurements to constrain the pore throat radius in order to predict permeability (see Ghanbarian et al., 2019).  
 This approach has been formalized by Doyen (1988), who applied effective medium theory to explain permeability with the equation  
 $$k =  \frac{\phi}{8\tau}  \frac{r_{eff}^4}{\langle r_b^2\rangle}$$
 where $r_{eff}$ is the effective pore throat radius and $\langle r_b^2\rangle$ is the spatial average of the square of the pore channel radius. This result is remarkably similar to the Carman-Kozeny equation, except that the dependency on specific surface area has been replaced with a dependency on the pore throat radii.  
-As a practical consideration, the pore throat radius might be more impacted by cements that coat the walls than cements that bridge the pores. However, the opposite is true for the specific surface area.
+As a practical consideration, the pore throat radius might be more impacted by cements that coat the walls than cements that bridge the pores. However, the opposite is true for the specific surface area (Scheidegger, 1960, p. 117).
 
 ### Data-driven models
-Empirical models have been important in reservoir engineering for a while. These models, such as Winland’s, find relationships between predictor variables and predictions. In the last two decades, advances in applied statistics and computing power have created new approaches for developing empirical relationships. This has spawned the field of data analytics and machine learning.  
-The data analytics approach is as follows: a) collect and clean data b) add new predictor variables c) perform exploratory analysis d) build machine learning models e) evaluate the machine learning models on new data f) interpret model results.  
-The data for this study comes from Ehrenberg (1990) and requires only minimal cleaning. However, it does not have all of the variables used in the Carman-Kozeny equation. Therefore, we performed feature engineering to derive these variables from Ehrenberg’s measurements. Among the variables we did not have were the mean particle size, the coefficient of variation of the particle size, and the skewness of the particle size distribution. These variables were derived through the procedure given in Appendix C.  
+Empirical models have long been important in reservoir engineering (see Frick, 1962). These models, such as Winland’s (Kolodzie, 1980), find relationships between predictor variables and predictions. In the last two decades, advances in applied statistics and computing power have created new approaches for developing empirical relationships. This has spawned the field of data analytics and machine learning.  
+The data analytics approach is as follows: a) collect and clean data b) propose predictor variables c) perform exploratory analysis d) build machine learning models e) evaluate the machine learning models on new data f) interpret model results.  
+The data for this study comes from Ehrenberg (1990). We chose this dataset because it has large variations in permeability and porosity, cement proportions are measured, and it requires only minimal cleaning. However, it does not have all of the variables used in the Carman-Kozeny equation. Therefore, we performed feature engineering to derive these variables from Ehrenberg’s measurements. Among the variables we did not have were the mean particle size, the coefficient of variation of the particle size, and the skewness of the particle size distribution. These variables were derived through the procedure given in Appendix C.  
 During exploratory data analysis, we plot the distributions of predictor and response variables and make cross-plots between variable pairs to identify predictor variables with high co-linearity and with strong correlation to the response variable. In this case, the predictor variables include the porosity, Carman-Kozeny void fraction, Carman-Kozeny predictions of permeability, and the amount of pore-filling and pore-bridging cement present.  
-Ehrenberg made two estimates of the porosity. One estimate came from helium porosiometry, and the other from point counting the intergranular macroporosity. These measurements are highly correlated, so including both in the regression model could cause overfitting. Therefore, we chose to use only one porosity estimate. Exploratory data analysis showed that intergranular macroporosity was a better predictor of permeability, and we chose it for the model.  
-We used two frameworks to build the models: multiple linear regression and gradient boosting regression (Friedman, 2001). Multiple linear regressions are common, easily interpretable, and robust to overfitting. These regressions also make several assumptions that are often broken in real data sets. Gradient boosting regressors make fewer assumptions about the distributions of the input data and the character of the relationship between predictor variables and the response, but are difficult to interpret and prone to overfitting. In order to maximize the benefits of these approaches and to minimize the drawbacks, we use both methods.  
-Through careful feature selection and pre-processing, we limited the degree to which the assumptions in linear regression are violated. As aforementioned, one of those steps is removing highly correlated predictor variables. In addition, we log-transformed the predictor variables and permeability (using the Box-Cox (1964) approach did not significantly improve the results) which reduces non-normality of the variables’ distributions.  
+Ehrenberg (1990) made two estimates of the porosity. One estimate came from helium porosiometry, and the other from point counting the intergranular macroporosity of thin sections. These measurements are highly correlated, so including both in the regression model could cause overfitting and problems with determining the influence of porosity on the permeability. Therefore, we chose to use only one porosity estimate. Exploratory data analysis showed that intergranular macroporosity was a better predictor of permeability, and we chose it for the model.  
+We used two approaches to build the models: multiple linear regression and gradient boosting regression (Friedman, 2001). Multiple linear regressions are common, easily interpretable, and robust to overfitting. These regressions also make several assumptions that are often violated in real data sets. Gradient boosting regressors make fewer assumptions about the distributions of the input data and the character of the relationship between predictor variables and the response, but are difficult to interpret and prone to overfitting. In order to maximize the benefits of these approaches and to minimize the drawbacks, we use both methods and compare the results.  
+Through careful feature selection and pre-processing, we limited the degree to which the assumptions in linear regression are violated. As aforementioned, one of those steps is removing highly correlated predictor variables. In addition, we log-transformed the predictor variables and permeability (using the Box-Cox (1964) approach did not significantly improve the results) which reduces non-normality of the variables’ distributions. This also makes the correlations between variables more linear.  
 Hyperparameters for the gradient boosting regressor were selected through cross-validation. These parameters were tuned in order to maximize the model effectiveness while reducing overfitting.  
 We evaluated the models through calculating the model explained variance (R^2^), mean absolute error, and root-mean squared error.
-In order to determine whether predictor variables contributed to the result, we used a non-parametric approach. This approach is called Permutation Feature Importance (Fisher, et al. (2018)), and estimates the importance of a predictor variable based on how much the model error increases after that variable is permuted.  
-Linear models can be interpreted simply through looking at the weights assigned to each feature. Gradient boosting methods require a different approach. Shapley Additive Explanations (SHAP values) offer a way to explain how each predictor variable contributed to each prediction (Lundberg and Lee, 2016). 
+In order to determine whether predictor variables contributed to the result, we used a non-parametric approach. This approach is called Permutation Feature Importance (Fisher, et al., 2018), and estimates the importance of a predictor variable based on how much the model error increases after that variable is permutated.  
+Linear models can be interpreted simply through examining the weight assigned to each predictor (feature). Gradient boosting methods require a different approach. Shapley Additive Explanations (SHAP values) offer a way to explain how each predictor variable contributed to each prediction (Lundberg and Lee, 2016). 
 
 ## Results
 ### Exploratory analysis
-First, we examined the distributions for porosity, permeability, Carman-Kozeny void fraction, and the proportion of various cements. The permeability, porosity---and therefore Carman-Kozeny void fraction--- distributions follow a bi-modal distribution. Therefore, when we performed regressions on the data, we treated each mode separately, rather than regressing across the entirety of the data. The data was split into samples where the interparticle macro-porosity is greater than 5% (high) or less than or equal to 5% (low).
+First, we examined the distributions for porosity, permeability, Carman-Kozeny void fraction, and the proportion of various cements (Fig. 1). The permeability, porosity---and therefore Carman-Kozeny void fraction--- distributions follow a bi-modal distribution. Therefore, when we performed regressions on the data, we treated each mode separately, rather than regressing across the entirety of the data. The data was split into samples where the interparticle macro-porosity is greater than 5% (high) or less than or equal to 5% (low).
 
 ```{r exploratory, fig.width=7, fig.height=5}
 #Permeability Box-Cox
@@ -179,8 +182,8 @@ First, we examined the distributions for porosity, permeability, Carman-Kozeny v
 #bc <- boxcox(KLH ~ 1, data = df)
 plot_hist <- function(x){
   x <- ensym(x)
-  p <- ggplot(df, aes(x = KLH)) +
-    geom_histogram(fill="steelblue", bins=20) +
+  p <- ggplot(df, aes(x = !!x)) +
+    geom_histogram(fill="steelblue", bins = 20) +
     annotation_logticks(sides = "b") +
     scale_y_continuous("Count", expand = c(0.001,0))
   p
@@ -210,7 +213,7 @@ p4 <-
   df %>%
   select(KAO,ICL,QCM, DOL) %>%
   drop_na() %>%
-  reshape2::melt(value.name = "Percent")  %>% 
+  reshape2::melt(value.name = "Percent", measure.vars = c("KAO","ICL","QCM","DOL"))  %>% 
   merge(df_name_cements, by.x = "variable", by.y ="Var1") %>%
   #mutate(cement_type = reorder(cement_type, }))
   ggplot(aes(x=Percent, y=cement_type)) +
@@ -222,7 +225,7 @@ p4 <-
 ggarrange(p1, p2, p3, p4, ncol = 2, nrow = 2, labels = "auto")
 ```
 
-Figure 1. Histograms for the distributions of a) Klinkenberg-corrected absolute permeability b) interparticle macro-porosity from point-counting c) Carman-Kozeny void fraction from macro-porosity d) percent cement abundance for several types of cement. The permeability and porosity follow bi-modal distributions. Quartz is the most abundant cement, followed by non-kaolin clay (smectite and illite).  
+Figure 1. Histograms for the distributions of a) Klinkenberg-corrected absolute permeability b) interparticle macro-porosity from point-counting c) Carman-Kozeny void fraction from macro-porosity d) percent cement abundance for several types of cement. The permeability and porosity are log-transformed and follow bi-modal distributions. Quartz is the most abundant cement, followed by non-kaolin clay (smectite and illite).  
 Next, we cross-plotted permeability and several predictors: Carman-Kozeny void fraction, tortuosity, pre-cementation specific surface area, and fraction of pore-bridging and pore-filling cement. Pore-filling cement includes quartz, kaolin clay, and dolomite, and pore-bridging cement is non-kaolin clay.  
 ```{r crossplots, fig.width=7, fig.height=7}
 crossplot <- function(x){
@@ -237,6 +240,9 @@ crossplot <- function(x){
   
   p
 }
+p0 <- crossplot(IMP) +
+  labs(x = "Interparticle porosity")
+
 p1 <- crossplot(CK_void_fraction) +
   labs(x = "Carman-Kozeny void fraction")
 
@@ -254,13 +260,12 @@ p4 <- crossplot(P_b) +
 p5 <- crossplot(P_f) +
   labs(x = "Pore filling cement")
 
-ggarrange(p1, p2, p3, p4, p5, ncol = 2, nrow = 3, labels = "auto", legend = "right", common.legend = TRUE)
+ggarrange(p0,p1, p2, p3, p4, p5, ncol = 2, nrow = 3, labels = "auto", legend = "right", common.legend = TRUE)
 ```  
 
-Figure 2. Cross-plots between permeability and several predictor variables. These variables include a) the Carman-Kozeny void fraction, b) tortuosity following Panda and Lake (1995), c) specific surface area for the grains (pre-cementation), d) fraction of pore-bridging cement e) fraction of pore-filling cement. The color indicates whether the sample has greater than 5 percent porosity (orange) or not (blue).  
-To assign values to the correspondence between the predictor variables and permeability, we calculated the Pearson's r and Kendall tau values (Table 1).
-
-Table 1. Pearson r and Kendall tau values for correlation between predictor variables and permeability. The data is split between modes of the porosity distribution, based on whether the porosity is greater than 5 p.u. or not. Tortuosity is calculated after taking cementation into account, specific surface area is calculated without including cementation.
+Figure 2. Cross-plots between permeability and several predictor variables. These variables include a) the interparticle macro-porosity b) the Carman-Kozeny void fraction, c) tortuosity following Panda and Lake (1995), d) specific surface area for the grains (pre-cementation), e) fraction of pore-bridging cement f) fraction of pore-filling cement. The color indicates whether the sample has greater than 5 percent porosity (orange) or not (blue).  
+To assign values to the correspondence between the predictor variables and permeability, we calculated the Pearson's r and Kendall tau values (Table 1). Both statistics measure the degree of association and have values between -1 and 1. Pearson’s statistic is a measure of linear correlation and based on the data values; Kendall’s statistic is based on the ranks of the data values. More details can be found in many statistics texts, including Miller (1986).  
+Table 1. Pearson r and Kendall tau values for correlation between log-transformed predictor variables and the log of permeability. The data is split between modes of the porosity distribution, based on whether or not the porosity is greater than 5. Tortuosity is calculated after taking cementation into account, specific surface area is calculated without including cementation.
 ```{r correlations}
 df2 <- data.table::as.data.table(df)[,list(Permeability = KLH, 
                                            `Carman-Kozeny void fraction` = CK_void_fraction, 
@@ -283,10 +288,14 @@ df2 %>%
   #kable_styling()
 ```
 
-The correlations between predictor variables and the permeability take on different values depending on whether the porosity is high or low. The correlations are consistently lower at low porosty.
+The correlations between predictor variables and the permeability take on different values depending on whether the porosity is high or low. The correlations are consistently smaller at low porosty. Porosity is the most strongly correlated with permeability, with cements next, and tortuosity and specific surface area having the weakest correlations.
 
 ### Model results
-We tested the accuracies and correlations between the physics-based and regression-based models and the measured permeability. There were three physics-based models of increasing complexity: First, we used a Carman-Kozeny model where we assumed the grains were monodisperse. Then, we used the Carman-Kozeny model that took the grain size distribution and compaction into effect, and finally, a model that took cement's effect on tortuosity into effect.  
+We tested the accuracies and correlations between the physics-based and regression-based models and the measured permeability. There were three physics-based models of increasing complexity:  
+1. Carman-Kozeny model where we assumed the grains were uncompacted  
+2. Carman-Kozeny model with compaction  
+3. Carman-Kozeny including compaction and  cement's effect on tortuosity   
+The results from these models of increasing complexity are shown in Fig. 3.
 
 ```{r physics_based, fig.width=7, fig.height=5}
 reg_plot <- function(df, kpred){
@@ -306,7 +315,7 @@ reg_plot <- function(df, kpred){
 
 p1 <- df %>%
   reg_plot(CK_void_fraction / (2 * tau_o * a_o^2)) +
-  labs(title = "Monodisperse")
+  labs(title = "Unconsolidated")
 
 p2 <- df %>%
   reg_plot(k_pl94_impor) +
@@ -319,12 +328,12 @@ p3 <- df %>%
 ggarrange(p1,p2, p3, common.legend = TRUE, labels = "auto", legend = "right")
 ```  
 
-Figure 3. Comparisons of physics-based models to measured permeability. a) Uses the Carman-Kozeny void fraction and the initial tortuosity and specific surface area expected from an uncompacted, monodisperse particle assemblage of the measured porosity and grain size. b) Considers compaction with the Panda-Lake (1994) model. c) Considers the impacts of compaction and cementation on the tortuosity, following the Panda-Lake (1995) model.
+Figure 3. Comparisons of physics-based models to measured permeability. a) Uses the Carman-Kozeny void fraction and the initial tortuosity and specific surface area expected from an uncompacted particle assemblage of the measured porosity and grain size. b) Considers compaction with the Panda-Lake (1994) model. c) Considers the impact of compaction and the effect of cementation on the tortuosity, following the Panda-Lake (1995) model.  
 
-
-Two regression-based models were tested: A linear model using a Winland-style equation of the form
-$$\ln k \propto \ln \phi_{CK} + \ln a_u + \ln \tau_e + \ln P_b + \ln P_f, $$
-and a gradient boosting model using the same predictor variables, but assuming no particular functional form between the variables and permeability.
+In addition to the two physics-based models, two regression-based models were tested:  
+1. A linear model using a Winland-style equation of the form
+$$\ln k \propto \ln \phi_{CK} + \ln a_u + \ln \tau_e + \ln P_b + \ln P_f, $$  
+2. A gradient boosting model using the same predictor variables, but assuming no particular functional form between the variables and permeability
 
 ```{r enet_training}
 #, fig.width=5, fig.height=3
@@ -472,7 +481,9 @@ ggarrange(p1, p2, ncol =1, common.legend=TRUE, legend = "right", labels ="auto")
 
 ```
 
-Figure 4. a) Predicted versus measured permeability using the linear and XGBoost models. b) Residauls in the predictions for the linear and XGBoost models. Color indicates whether the sample is in the high (greater than 5%) or low porosity group.
+Figure 4. a) Predicted versus measured permeability using the linear and XGBoost models. b) Residuals in the predictions for the linear and XGBoost models. Color indicates whether the sample is in the high (greater than 5%) or low porosity group.
+
+The linear model is inflicting a systematic injustice on higher porosity for both groups
 
 ```{r winland_feature_importance, fig.width=5, fig.height=3}
 importance_lp <- varImp(fit_enet_lp)$importance
@@ -561,7 +572,8 @@ model_fitness <-
     postResample(log( predict(fit_xgboost_hp, test_hp)), (test_hp$KLH))
   ) %>%
   as_tibble() %>%
-  round(2)
+  round(2) %>%
+  rename(`R^2^`=Rsquared)
 
 model_fitness$Model <- c("XGBoost","XGBoost","XGBoost","XGBoost",
                          "Linear","Linear","Linear","Linear")
@@ -570,7 +582,7 @@ model_fitness[,"Porosity group"] <- c("Low","Low","High","High",
 model_fitness[,"Data"] <- c("Train","Test","Train","Test",
                          "Train","Test","Train","Test")
 
-kable(model_fitness[,c("Model", "Porosity group","Data","RMSE","MAE","Rsquared")],
+kable(model_fitness[,c("Model", "Porosity group","Data","RMSE","MAE","R^2^")],
       format="pandoc") #%>%
   #kable_styling()
 ```
@@ -579,8 +591,31 @@ kable(model_fitness[,c("Model", "Porosity group","Data","RMSE","MAE","Rsquared")
 
 ## Discussion
 
+1. Flat topped permeability for XGBoost from tree-based nature
+2. We should mention the merits of dividing up the dataset relative to treating the data... en masse  
+
+
 ## Conclusions
 This paper has the makings of greatness.
+
+## References
+Box, G. E. P., Cox, D.R., 1964. An analysis of transformation revisited, rebutted, Journal of the American Statistical Association, 77, pp. 209-210.   
+Carman, P.C., 1937. Fluid flow through granular beds. Trans. Inst. Chem. Eng., 15, pp.150-166.  
+Di, J. and Jensen, J.L., 2015. A closer look at pore throat size estimators for tight gas formations. Journal of Natural Gas Science and Engineering, 27, pp.1252-1260.  
+Doyen, P.M., 1988. Permeability, conductivity, and pore geometry of sandstone. Journal of Geophysical Research: Solid Earth, 93(B7), pp.7729-7740.  
+Dullien, F.A., 2012. _Porous media: fluid transport and pore structure_. Academic press.  
+Ehrenberg, S.N., 1990. Relationship between diagenesis and reservoir quality in sandstones of the Garn formation, Haltenbanken, mid-Norwegian Continental shelf (1). AAPG bulletin, 74(10), pp.1538-1558.  
+Fisher, A., Rudin, C. and Dominici, F., 2018. Model class reliance: Variable importance measures for any machine learning model class, from the “Rashomon” perspective. arXiv preprint arXiv:1801.01489.  
+Frick, T.C., 1962. _Petroleum production handbook_ (Vol. 1). McGraw-Hill.  
+Friedman, J.H., 2001. Greedy function approximation: a gradient boosting machine. Annals of statistics, pp.1189-1232.  
+Ghanbarian, B., Lake, L.W. and Sahimi, M., 2019. Insights into rock typing: a critical study. SPE Journal, 24(01), pp.230-242.  
+Kolodzie Jr, S., 1980, January. Analysis of pore throat size and use of the Waxman-Smits equation to determine OOIP in Spindle Field, Colorado. In SPE annual technical conference and exhibition. Society of Petroleum Engineers.  
+Kozeny, J., 1927. Soil permeability. Sitzungsber. Oesterr. Akad. Wiss. Wien. Math. Naturwisss. Kl. Abt, 136, p.271.  
+Lundberg, S.M., Erion, G.G. and Lee, S.I., 2018. Consistent individualized feature attribution for tree ensembles. arXiv preprint arXiv:1802.03888.  
+Miller, R. G., 1986, _Beyond ANOVA, Basics of Applied Statistics_, J. Wiley and Sons, New York, 317p.  
+Panda, M.N. and Lake, L.W., 1994. Estimation of single-phase permeability from parameters of particle-size distribution. AAPG bulletin, 78(7), pp.1028-1039.  
+Panda, M.N. and Lake, L.W., 1995. A physical model of cementation and its effects on single-phase permeability. AAPG bulletin, 79(3), pp.431-443.  
+Scheidegger, A.E., 1960. **I cannot find this reference XXX**
 
 ## Appendix A. Derivation of a modified Carman-Kozeny equation for uncemented sandstones
 This section follows the derivation laid out by Panda and Lake (1994).
