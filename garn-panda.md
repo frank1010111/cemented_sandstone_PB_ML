@@ -7,18 +7,21 @@ Narrative
 ---------
 
 The most well-known physics-based approach to estimating permeability was developed by Kozeny (1927) and later modified by Carman (1937). In its modern form, the equation is written as
+
 $$\\begin{equation}
 k = \\frac{\\phi^3}{2\\tau(1-\\phi)^2 a^2},
 \\end{equation}$$
  which, for simplicity, we're going to recast as
+
 $$\\begin{equation}
 k = \\frac{\\phi\_{CK}}{2\\tau a^2},
 \\end{equation}$$
-where permeability is *k*, porosity is *ϕ*, tortuosity is *τ*, the specific surface area is *a*, and the Carman-Kozeny void fraction is *ϕ*<sub>*CK*</sub>. For an uncemented sandstone, tortuosity can be calculated following the derivation in Appendix B, which comes from Panda and Lake (1994). For a cemented sandstone, the tortuosity changes because of cements blocking and forcing modification of the flow paths.
+where permeability is *k*, porosity is *ϕ*, tortuosity is *τ*, the specific surface area is *a*, and the Carman-Kozeny void fraction is *ϕ*<sub>*C**K*</sub>. For an uncemented sandstone, tortuosity can be calculated following the derivation in Appendix B, which comes from Panda and Lake (1994). For a cemented sandstone, the tortuosity changes because of cements blocking and forcing modification of the flow paths.
 
 Specific surface area for an uncemented sandstone can be estimated from the particle size distribution, after assuming that the particles are spherical. After cementation, the nature of the cement is important in how the surface area changes. Some cements will coat the walls of the pores, slightly decreasing the specific surface area. Other cements will line or bridge the pores, moderately to greatly increasing the specific surface area.
 
 A competing hypothesis is that pore throat sizes are the most important determinant of permeability-porosity transforms. This appears in the Winland relations that follow the form
+
 log*k* = *A*log*ϕ* + *B*log*r* + *C*,
 where *r* is the pore throat radius. Pore throat radius might be more impacted by cements that coat the walls than cements that bridge the pores. Wouldn't that be interesting?
 
@@ -66,7 +69,7 @@ summary(lm(log(KLH) ~ log(CK_void_fraction), data=df))
     ## Multiple R-squared:  0.8185, Adjusted R-squared:  0.8176 
     ## F-statistic: 960.5 on 1 and 213 DF,  p-value: < 2.2e-16
 
-Hey! That's pretty good! The R<sup>2</sup> is 0.85, and there are no odd trends. Sure, at low porosity the data resolution starts to be a problem, but that is at 1/100th of the average permeability, and "the permeability is bad" is really all you need to know there. Okay, with that positive result, let's add the grain size distribution to the model and see if we can do even better. With the grain size, we can start talking about the surface area of the pores. Bird et al. (1960) say that permeability is related to the square of the pore radius, which is roughly equivalent to the square of the grain diameter.
+Hey! That's pretty good! The R**<sup>2</sup> is 0.85, and there are no odd trends. Sure, at low porosity the data resolution starts to be a problem, but that is at 1/100th of the average permeability, and "the permeability is bad" is really all you need to know there. Okay, with that positive result, let's add the grain size distribution to the model and see if we can do even better. With the grain size, we can start talking about the surface area of the pores. Bird et al. (1960) say that permeability is related to the square of the pore radius, which is roughly equivalent to the square of the grain diameter.
 
 ``` r
 df %>%
@@ -241,7 +244,7 @@ lm(log(KLH) ~ log(k_pred), data = mutate(df, k_pred = CK_void_fraction/(tau_u * 
     ## Multiple R-squared:  0.8139, Adjusted R-squared:  0.813 
     ## F-statistic: 931.6 on 1 and 213 DF,  p-value: < 2.2e-16
 
-And that helps a bit, but it still isn't as good as just using *ϕ*<sub>*CK*</sub>. But wait, there's more! Cementation should matter. Let's try the cemented measure of tortuosity. That ought to get us somewhere.
+And that helps a bit, but it still isn't as good as just using *ϕ*<sub>*C**K*</sub>. But wait, there's more! Cementation should matter. Let's try the cemented measure of tortuosity. That ought to get us somewhere.
 
 ``` r
 df %>%
@@ -326,7 +329,8 @@ df %>%
 Ah ha! This matters. Nice, high, Spearman r values showing that pore-filling and pore-bridging cement are bad for permeability. Now, these also happen to be strongly correlated with interparticle porosity and, as one might expect, so the story could be complicated, there. This looks like enough to start setting up a regression. What form should this regression take? Let's take some inspiration from Winland and slightly abuse Panda and Lake's (1995) Carman-Kozeny equation.
 
 After that abuse, the regression equation becomes
-log*k* = *A*<sub>1</sub>log*ϕ*<sub>*CK*</sub> − *A*<sub>2</sub>log*P*<sub>*b*</sub> − *A*<sub>3</sub>log*P*<sub>*f*</sub> − *A*<sub>4</sub>log*a*<sub>*u*</sub> − *A*<sub>5</sub>log*τ*<sub>*e*</sub> + *A*<sub>0</sub>.
+
+log*k* = *A*<sub>1</sub>log*ϕ*<sub>*C**K*</sub> − *A*<sub>2</sub>log*P*<sub>*b*</sub> − *A*<sub>3</sub>log*P*<sub>*f*</sub> − *A*<sub>4</sub>log*a*<sub>*u*</sub> − *A*<sub>5</sub>log*τ*<sub>*e*</sub> + *A*<sub>0</sub>.
 
 Now, to the regressor!
 
@@ -382,7 +386,7 @@ df %>%
 
 ![](garn-panda_files/figure-markdown_github/cements_regression-1.png)
 
-Now we're cooking with gas! An R<sup>2</sup> of 0.87 is nothing to sneeze at. Also, it's the first time we've improved beyond the straight Carman-Kozeny void fraction relation. The one issue is that this assumes a linear relationship between the cementation of various types and the porosity. The solution here is to go to non-parametric fitting. Now, non-parametric fitting is prone to overfitting, so we're going to have to set up some cross-validation. After that, let's perform some recursive feature elimination to figure out which features are really impacting permeability. Then, let's use a gradient boosting regressor on the significant features.
+Now we're cooking with gas! An R**<sup>2</sup> of 0.87 is nothing to sneeze at. Also, it's the first time we've improved beyond the straight Carman-Kozeny void fraction relation. The one issue is that this assumes a linear relationship between the cementation of various types and the porosity. The solution here is to go to non-parametric fitting. Now, non-parametric fitting is prone to overfitting, so we're going to have to set up some cross-validation. After that, let's perform some recursive feature elimination to figure out which features are really impacting permeability. Then, let's use a gradient boosting regressor on the significant features.
 
 ``` r
 # fit_control <- trainControl(index = groupKFold(df$WELL))
@@ -497,6 +501,8 @@ postResample(log( predict(fit_xgboost, df_holdout)), log(df_holdout$KLH))
 #cor(log( predict(fit_xgboost, df_holdout)), log(df_holdout$KLH))
 ```
 
+And now, the variable importances:
+
 ``` r
 library(xgboost)
 ```
@@ -594,6 +600,8 @@ nrow = 2, ncol = 2)
 
 ![](garn-panda_files/figure-markdown_github/varImp-4.png)
 
+Interesting results, yes?
+
 Appendix A
 ----------
 
@@ -602,18 +610,23 @@ Appendix A
 #### Following Panda and Lake (1994)
 
 We start with the Carman-Kozeny equation
+
 $$\\begin{equation}
 k = \\frac{\\phi^3}{2\\tau(1-\\phi)^2 a^2},
 \\end{equation}$$
- where permeability is *k*, porosity is *ϕ*, tortuosity is *τ*, and the specific surface area is *a*. For porosity, we use the porosity to Helium that has been measured on the Garn data. Permeability is air permeability that has been corrected for Klinkenberg effects. In order to measure tortuosity and specific surface area, we have measurements of the median grain size and Trask sorting coefficient, following the approach proposed by Beard and Weyl (1973). Skewness of the distribution of grain sizes can be extracted from these parameters.
+
+where permeability is *k*, porosity is *ϕ*, tortuosity is *τ*, and the specific surface area is *a*. For porosity, we use the porosity to Helium that has been measured on the Garn data. Permeability is air permeability that has been corrected for Klinkenberg effects. In order to measure tortuosity and specific surface area, we have measurements of the median grain size and Trask sorting coefficient, following the approach proposed by Beard and Weyl (1973). Skewness of the distribution of grain sizes can be extracted from these parameters.
 
 Given this information, a modified Carman Kozeny equation following Panda and Lake (1994) is
+
 $$\\begin{equation}
 k = \\frac{\\bar{D}^2 \\phi^3}{72\\tau\_u \\left(1-\\phi \\right)^2} \\frac{\\left(\\gamma C\_D^3 + 3C\_D^2 +1 \\right)^2}{\\left(1+C\_D^2\\right)^2},
 \\end{equation}$$
- where $\\bar{D}$ is the mean particle size, *C*<sub>*D*</sub> is the coefficient of varation of the particle size distribution ($C\_D=\\sigma\_D/\\bar{D}$), *γ* is the skewness of the particle size distribution. and *τ*<sub>*u*</sub> is the tortuosity of an unconsolidated, uncemented sand.
+
+where $\\bar{D}$ is the mean particle size, *C*<sub>*D*</sub> is the coefficient of varation of the particle size distribution ($C\_D=\\sigma\_D/\\bar{D}$), *γ* is the skewness of the particle size distribution. and *τ*<sub>*u*</sub> is the tortuosity of an unconsolidated, uncemented sand.
 
 Panda and Lake (1994) do not calculate the original tortuosity. However, there has been a wealth of work on this problem in the physics, soil, and petroleum literature. One approach is proposed by Ghanbarian, et al. (2013). This approach makes use of percolation theory and results in tortuosity following a power law with respect to porosity. Taking their equation 8 (which assumes reasonably well-sorted grains and a large system) and plugging in the relevant numbers, original tortuosity follows the equation
+
 $$\\begin{align}
 \\tau\_o &= \\left(\\frac{\\phi - \\phi\_t}{1 - \\phi\_t} \\right)^{\\nu(1-D)} \\\\
  &= \\left(\\frac{0.9\\phi}{1-0.1\\phi} \\right)^{-0.378}
@@ -742,22 +755,29 @@ Pore-lining cements find it energetically favorable to form long crystals that s
 Pore-bridging cements can partially or completely block the pore throats. This strongly influences the permeability, increasing the tortuosity of the system and decreasing the connectivity. Examples of the minerals that bridge pores include illite, chlorite, and montmorillonite (the non-Kaolin clay minerals).
 
 After cementation, the tortuosity and specific surface area has changed. Panda and Lake (1995) suggest an effective tortuosity, *τ*<sub>*e*</sub>, given by
+
 $$\\begin{equation}
 \\tau\_e = \\tau\_u \\left(1+C\_D^2 \\right)\\left(1+\\frac{Rm\_b}{1-m\_b} \\right)^2 \\left(1 + \\frac{2m}{(1-m) \\phi^{1/3}} \\right)^2,
 \\end{equation}$$
- where *R* is a constant equal to 2 indicating the additional distance traveled by the fluid as a function of the thickness of cementation. The volume fraction of pore-bridging cement is *m*<sub>*b*</sub> = *P*<sub>*b*</sub>(1 − *ϕ*)/*ϕ*, and the volume fraction of pore-filling cement is *m* = *P*<sub>*f*</sub>(1 − *ϕ*)/*ϕ*.
+
+where *R* is a constant equal to 2 indicating the additional distance traveled by the fluid as a function of the thickness of cementation. The volume fraction of pore-bridging cement is *m*<sub>*b*</sub> = *P*<sub>*b*</sub>(1 − *ϕ*)/*ϕ*, and the volume fraction of pore-filling cement is *m* = *P*<sub>*f*</sub>(1 − *ϕ*)/*ϕ*.
 
 For an unconsolidated sand of variable sizes, the specific surface area is
+
 $$\\begin{equation}
 a\_u = \\frac{6(\\sigma^2 + \\bar{D}^2)}{\\gamma \\sigma^3 + 3\\bar{D}\\sigma^2 + \\bar{D}^3}
 \\end{equation}$$
- After cementation, the effective specific surface area follows the equation
+
+After cementation, the effective specific surface area follows the equation
+
 $$\\begin{equation}
 a\_e = a\_u \\frac{1-\\phi\_u}{1-\\phi} + a\_b P\_b + a\_f P\_f
 \\end{equation}$$
- where *a*<sub>*u*</sub> is the specific surface area for an unconsolidated, uncemented sand, *ϕ*<sub>*u*</sub> is the porosity of an unconsolidated sand, *a*<sub>*b*</sub> is the specific surface area for a pore-bridging cement, *a*<sub>*f*</sub> is the specific surface area for a pore-filling cement, and *P*<sub>*b*</sub>, *P*<sub>*f*</sub> are the relative fractions of pore-bridging and pore-filling cement, respectively.
+
+where *a*<sub>*u*</sub> is the specific surface area for an unconsolidated, uncemented sand, *ϕ*<sub>*u*</sub> is the porosity of an unconsolidated sand, *a*<sub>*b*</sub> is the specific surface area for a pore-bridging cement, *a*<sub>*f*</sub> is the specific surface area for a pore-filling cement, and *P*<sub>*b*</sub>, *P*<sub>*f*</sub> are the relative fractions of pore-bridging and pore-filling cement, respectively.
 
 Taking these equations together, the equation for permeability becomes
+
 $$\\begin{equation}
 k = \\left\[\\bar{D}^2 \\phi^3 \\left(\\gamma C\_D^3 + 3C\_D^2 + 1 \\right)^2 \\right\]
  \\left\\{ 2\\tau\_e (1-\\phi)^2 \\left\[ 6\\left(1+C\_D^2 \\right) \\frac{1-\\phi\_u}{1-\\phi} + 
@@ -804,16 +824,21 @@ Appendix C
 Here we relate median grain size and the Trask Sorting Coefficient (*S*<sub>*o*</sub>) to the mean, standard deviation, and skewness of the grain size distribution. From the mean and standard deviation, the coefficient of variation, $C\_v = \\bar{D}/\\sigma$, can be calculated.
 
 Grain size distribution is often described by the median grain size and the Trask Sorting Coefficient (*S*<sub>*o*</sub>), which is defined by $S\_o=\\sqrt{D\_{0.75}/D\_{0.25}}$, where *D*<sub>*p*</sub> is the quantile value indicated by *p*, such that *D*<sub>0.25</sub> is the 25%-ile grain size. Panda (1994, Appendix B) derived an equation relating average grain size, Trask Sorting Coefficient, and the standard deviation of the grain size, which is
+
 $$\\begin{equation}
 \\sigma = \\bar{D} \\frac{S\_o^2-1}{0.675\\left(S\_o^2+1\\right)}.
 \\end{equation}$$
- This equation is done through *D*<sub>*p*</sub> being calculated in a log<sub>2</sub> space, but most calculations of *S*<sub>*o*</sub> use the definition I provided above, so this should be re-derived.
+
+This equation is done through *D*<sub>*p*</sub> being calculated in a log<sub>2</sub> space, but most calculations of *S*<sub>*o*</sub> use the definition I provided above, so this should be re-derived.
 
 According to my derivation, assuming lognormality, following a distribution with the PDF
+
 $$\\begin{equation}
 \\frac{1}{x\\sigma\\sqrt{2\\pi}} \\exp\\left(-\\frac{(\\ln x-\\mu)^2}{2\\sigma^2} \\right),
 \\end{equation}$$
- the mean grain size is $\\bar{D} = \\exp(\\mu + \\sigma/2)$, and in terms of the median and Trask sorting coefficient, the parameters of the distribution are
+
+the mean grain size is $\\bar{D} = \\exp(\\mu + \\sigma/2)$, and in terms of the median and Trask sorting coefficient, the parameters of the distribution are
+
 $$\\begin{align}
 \\mu &= \\ln D\_{0.5}\\\\
 \\sigma &= \\frac{\\ln S\_o}{\\sqrt{2}\\ \\text{erf}^{-1}(0.5)}
