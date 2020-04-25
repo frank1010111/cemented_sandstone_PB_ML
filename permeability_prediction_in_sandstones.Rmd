@@ -4,11 +4,13 @@ title: Comparison of permeability predictions on cemented sandstones with physic
 author: "Frank Male, Jerry L. Jensen, Larry W. Lake"
 date: "`r format(Sys.Date(), '%d %B %Y')`"
 output:
-  word_document: 
-    reference_docx: styles-ref.docx
+  md_document:
+    variant: markdown_github
   pdf_document: default
   html_document:
     df_print: paged
+  word_document: 
+    reference_docx: styles-ref.docx
 ---
 
 ```{r setup, include=FALSE}
