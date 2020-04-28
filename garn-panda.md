@@ -76,14 +76,6 @@ Now, because this is a data-driven approach, let’s start by comparing
 permeability to the Carman-Kozeny void fraction.
 
 ``` r
-# readWorksheetFromFile("C:/Users/malef/Dropbox/ROZ/data/GARN1990.xlsx", sheet=1) %>%
-#   mutate_at(vars(CD:IMP), ~ as.numeric(.)) %>%
-#   mutate(WELL = str_trim(WELL)) %>%
-#   mutate(IMP = replace(IMP, IMP==0, 0.01)) %>%
-#   select(WELL, KLH, POR, IMP, GS, SO, KAO, ICL, QCM, CAL, DOL) %>%
-#   filter_all(any_vars(is.na(.)))
-
-
 df %>%
   ggplot(aes(x=(IMP/100)^3/(1-(IMP/100))^2, y=KLH)) +
   geom_point() +
@@ -141,12 +133,6 @@ df %>%
 ![](garn-panda_files/figure-gfm/CK_GS_porosity-1.png)<!-- -->
 
 ``` r
-#df %>% 
-#  mutate(k_pred = mean_GS^2 * CK_void_fraction) %>% 
-#  select(k_pred,CK_void_fraction,GS,KLH) %>% 
-#  na.omit() %>% 
-#  cor(method='spearman')
-
 lm(log(KLH) ~ log(k_pred), data = mutate(df, k_pred = mean_GS^2 * CK_void_fraction)) %>%
   summary()
 ```
@@ -190,12 +176,6 @@ df %>%
 ![](garn-panda_files/figure-gfm/CK_au_porosity-1.png)<!-- -->
 
 ``` r
-# df %>% 
-#   mutate(k_pred = a_u * CK_void_fraction) %>% 
-#   select(k_pred, CK_void_fraction, GS, a_u, KLH) %>% 
-#   na.omit() %>% 
-#   cor(method='spearman')
-
 lm(log(KLH) ~ log(k_pred), data = mutate(df, k_pred = CK_void_fraction/a_u^2)) %>%
   summary()
 ```
@@ -238,11 +218,6 @@ df %>%
 ![](garn-panda_files/figure-gfm/CK_Av_tau-1.png)<!-- -->
 
 ``` r
-# df %>% mutate(k_pred = CK_void_fraction / (tau_o * a_u^2)) %>% 
-#   select(CK_void_fraction,tau_o, a_u, k_pred,KLH) %>% 
-#   na.omit() %>% 
-#   cor(method="spearman") 
-
 lm(log(KLH) ~ log(k_pred), data = mutate(df, k_pred = CK_void_fraction/(tau_o * a_u^2))) %>%
   summary()
 ```
@@ -286,11 +261,6 @@ df %>%
 ![](garn-panda_files/figure-gfm/CK_Av_tau_u-1.png)<!-- -->
 
 ``` r
-# df %>% mutate(k_pred = a_u * CK_void_fraction / tau_u) %>%
-#   select(CK_void_fraction,tau_u, a_u ,k_pred,KLH) %>%
-#   na.omit() %>%
-#   cor(method="spearman") # %>% #tapply( function(x) x^2)
-
 lm(log(KLH) ~ log(k_pred), data = mutate(df, k_pred = CK_void_fraction/(tau_u * a_u^2))) %>%
   summary()
 ```
@@ -332,11 +302,6 @@ df %>%
 ![](garn-panda_files/figure-gfm/cemented-1.png)<!-- -->
 
 ``` r
-# df %>% mutate(k_pred = CK_void_fraction / (tau_e * a_u^2)) %>% 
-#   select(CK_void_fraction,tau_e, a_u ,k_pred,KLH) %>% 
-#   na.omit() %>% 
-#   cor(method="spearman")
-
 lm(log(KLH) ~ log(k_pred), data = mutate(df, k_pred = CK_void_fraction/(tau_e * a_u^2))) %>%
   summary()
 ```
@@ -492,23 +457,6 @@ really impacting permeability. Then, let’s use a gradient boosting
 regressor on the significant features.
 
 ``` r
-# fit_control <- trainControl(index = groupKFold(df$WELL))
-# rf_grid <- expand.grid(mtry = c(2,3,4,5),
-#                        min.node.size = c(4,5,6,7),
-#                        splitrule = "maxstat"
-# )
-# 
-#              
-# fit_rf<- train(
-#   log(KLH) ~ CK_void_fraction + P_b + P_f + a_u + tau_e,
-#   data = df,
-#   method = 'ranger',
-#   trControl = fit_control,
-#   tuneGrid = rf_grid
-# )
-#
-# ggplot(fit_rf,plotType = "scatter", output="layered", highlight = TRUE)
-
 fit_ctr_rfe <- rfeControl(functions = rfFuncs,
                           index = groupKFold(df$WELL)
                           )
@@ -519,8 +467,6 @@ rf_profile <- rfe(
   data = df,
   rfeControl = fit_ctr_rfe
 )
-
-#arrange(df, df$IMP)
 
 print(paste("The predictors are:", paste(predictors(rf_profile), collapse = ", ")))
 ```
@@ -579,7 +525,6 @@ df %>%
   ggplot(aes(x = k_pred, y = KLH)) + 
   geom_point() +
   geom_abline(slope=1,intercept=0) +
-  #geom_smooth(method="lm") +
   scale_x_log10() +
   scale_y_log10() +
   labs(x="Predicted permeability from gradient boosting (mD)", y = "Measured permeability (mD)")
@@ -600,10 +545,6 @@ postResample(log( predict(fit_xgboost, df_holdout)), log(df_holdout$KLH))
 
     ##      RMSE  Rsquared       MAE 
     ## 5.2617136 0.5800722 4.9913699
-
-``` r
-#cor(log( predict(fit_xgboost, df_holdout)), log(df_holdout$KLH))
-```
 
 And now, the variable importances:
 
@@ -644,20 +585,6 @@ data <- merge(melt(shaps$shap_contrib, value.name="SHAP"),
               melt(shaps$data, value.name="Value")
 ) 
 
-#data
-
-
-# data <- merge(melt(shaps$shap_contrib, value.name="SHAP"),
-#               melt(shaps$data, value.name="Value")
-# ) %>%
-#   merge(df_name, by.x = "Var2", by.y ="Var1")
-# explan_order <- data %>% 
-#   dplyr::group_by(explanation) %>% 
-#   summarise(max=max(abs(SHAP))) %>% 
-#   arrange(max)
-# data$explanation <- factor(data$explanation, levels=explan_order$explanation)
-
-
 ggplot(data,aes(x=SHAP,y=Var2, color=Value)) +
   geom_jitter() +
   #scale_color_distiller(palette="Reds") +
@@ -668,16 +595,6 @@ ggplot(data,aes(x=SHAP,y=Var2, color=Value)) +
 ![](garn-panda_files/figure-gfm/varImp-3.png)<!-- -->
 
 ``` r
-# ggsave(paste0(figdir,"shapley_plot_XGB.png"),height=3,width=8)
-
-# data %>%
-#   filter(explanation %in% explan_order$explanation[5:8]) %>%
-#   mutate(explanation = factor(explanation, levels=explan_order$explanation[8:5])) %>%
-#   ggplot(aes(x=Value, y=SHAP)) +
-#   facet_wrap(~explanation, scales="free_x",ncol=2) +
-#   geom_point(color="peru")
-# ggsave(paste0(figdir,"SHAP_byvalue.png"), width=6.1,height=4)
-
 ggarrange(
 ggplot(filter(data, Var2=="CK_void_fraction"), aes(x=Value, y = SHAP)) +
   geom_point() +
