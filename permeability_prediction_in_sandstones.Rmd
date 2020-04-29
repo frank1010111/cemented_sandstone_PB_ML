@@ -4,8 +4,8 @@ title: Comparison of permeability predictions on cemented sandstones with physic
 author: "Frank Male, Jerry L. Jensen, Larry W. Lake"
 date: "`r format(Sys.Date(), '%d %B %Y')`"
 output:
-  md_document:
-    variant: markdown_github
+  github_document: 
+    pandoc_args: --webtex=http://chart.apis.google.com/chart?cht=tx&chl= # --mathjax 
   pdf_document: default
   html_document:
     df_print: paged
@@ -145,7 +145,7 @@ fit_control_hp <- trainControl(index = groupKFold(train_hp$WELL),
 # Abstract
 Permeability prediction has been an important problem since the time of Darcy. Most approaches to solve this problem have used either idealized physical models or empirical relations. In recent years, machine learning (ML) has led to more accurate and robust, but less interpretable empirical models. Using 211 core samples collected from 12 wells in the Garn Sandstone from the North Sea, we compared idealized physical models based on the Carman-Kozeny equation to interpretable ML models. We found that ML models trained on estimates of physical properties are more accurate than physical models. Also, we found evidence of a threshold of about 10% volume fraction, above which pore-filling cement strongly affects permeability.  
   
-#Introduction
+# Introduction  
 Sandstone is one of the most common types of reservoir rocks, contributing approximately 30% to the stratigraphic  total of sedimentary rocks (Pettijohn, 1975) and containing about 50% of the world’s hydrocarbon reserves. Therefore, it is of interest to predict the reservoir properties of sandstones. This paper will focus on analyzing the factors that influence sandstone permeability.  
   
 At least two broad approaches are available for permeability prediction of sandstones: 1) physics-based models, such as the Carman-Kozeny equation and its derivatives, and 2) empirical models, developed using statistical or machine learning (ML) tools that assume no particular physical laws linking predictors and permeability. There are several physics-based and empirical models; Dullien (2012) gives a good review of both model types. We will apply a hybrid approach that considers both the physical intuition encapsulated in the Carman-Kozeny equation and data-centric models. The novelty of our work is that it compares the results of the physics-only and physics plus data driven models.  
@@ -202,11 +202,13 @@ We used two approaches to build the models: multiple linear regression and gradi
 Through careful feature selection and pre-processing, we limited the degree to which the assumptions in linear regression are violated. As aforementioned, one of those steps is removing highly correlated predictor variables. In addition, we log-transformed the predictor variables and permeability, which reduces non-normality of the variables’ distributions. Log-transformation also makes the correlations between variables more linear. Using the Box-Cox (1964) transformation did not significantly improve the results, but it can be effective in some cases, as shown by Jensen et al. (1987).)  
   
 We evaluated the models through calculating the model explained variance (R^2^), mean absolute error (MAE), and root-mean squared error (RMSE). The equations for these measures are as follows  
-$$\begin{align}
-R &= \frac{1}{n-1} \sum_i^n \frac{y_i - \bar{y}}{\sigma_y}\frac{y'_i - \bar{y'}}{\sigma_{y'}} \\
-\text{RMSE} &= \left(\frac1n \sum_i^n \left(y_i - y_i'\right)^2 \right)^{1/2} \\
-\text{MAE} &= \frac1n \sum_i^n \left|y_i - y_i'\right|
-\end{align}$$
+<!--$$\begin{align}-->
+$$R = \frac{1}{n-1} \sum_i^n \frac{y_i - \bar{y}}{\sigma_y}\frac{y'_i - \bar{y'}}{\sigma_{y'}}$$  
+
+$$\text{RMSE} = \left(\frac1n \sum_i^n \left(y_i - y_i'\right)^2 \right)^{1/2}$$  
+
+$$\text{MAE} = \frac1n \sum_i^n \left|y_i - y_i'\right|$$
+<!--\end{align}$$-->
 where $n$ is the sample size $i$ represents the sample number, $y$ is the actual value, $y'$ is the predicted value, a bar over a quantity is the sample mean of that quantity, and $\sigma$ is the sample standard deviation of a quantity. 
 
 Hyperparameters for the gradient boosting regressor were selected through cross-validation. During cross-validation, candidate models are fed data on seven of the eight wells in the training data, then scored based on which minimizes the RMSE predicting the excluded well. This is iterated through each well and a gamut of hyperparameters. Through this procedure, we maximize the model effectiveness while reducing overfitting by minimizing the validation RMSE on held-out data (four wells in the testing data).  
@@ -735,7 +737,7 @@ We used a sandstone dataset to test several models for predicting permeability i
      + Low porosity: pore-bridging cement, porosity, tortuosity, pore-filling cement      
   
 # Acknowledgements
-We are grateful to Stephen Ehrenbreg for the kind donation of his core analysis of the Garn formation. This study was funded in part by the US Department of Energy (DOE) grant FE0024375 (PI: Ian J. Duncan) and in part by the State of Texas Advanced Resource Recovery Program (PI: William A. Ambrose). Statistical analysis was performed in the R language (R Core Team, 2014). Plots were generated using the GGPlot2 package (Wickham, 2009). Larry W. Lake holds the Shahid and Sharon Chair at the Hildebrand Department of Petroleum and Geosystems Engineering.
+We are grateful to Stephen Ehrenbreg for the kind donation of his core analysis of the Garn formation. We thank Ian Duncan and William Ambrose for valuable discussions during the preparation of this manuscript and Behzad Ghanbarian for suggestions regarding theoretical calculations of tortuosity. This study was funded in part by the US Department of Energy (DOE) grant FE0024375 (PI: Ian J. Duncan) and in part by the State of Texas Advanced Resource Recovery Program (PI: William A. Ambrose). Statistical analysis was performed in the R language (R Core Team, 2014). Plots were generated using the GGPlot2 package (Wickham, 2009). Larry W. Lake holds the Shahid and Sharon Chair at the Hildebrand Department of Petroleum and Geosystems Engineering.
 
 # References
 Amyx, J. W., Bass, D. M., and Whiting, R. L., 1960, _Petroleum Reservoir Engineering_, McGraw-Hill.  
@@ -872,18 +874,16 @@ After cementation, the tortuosity and specific surface area has changed. Panda a
 $$\tau_e = \tau_u \left(1+C_D^2 \right)\left(1+\frac{Rm_b}{1-m_b} \right)^2 \left(1 + \frac{2m}{(1-m) \phi^{1/3}} \right)^2,$$
 where $R$ is a constant equal to 2 indicating the additional distance traveled by the fluid as a function of the thickness of cementation. The volume fraction of pore-bridging cement is $m_b = P_b(1-\phi_o)/\phi_o$, and the volume fraction of pore-filling cement is $m = P_f (1-\phi_o)/\phi_o$. ($\phi_o$ is the original porosity of the sandstone grains, before compaction and cementation.)  
     
-For an unconsolidated sand of variable sizes, the specific surface area is
-$$a_u = \frac{6(\sigma^2 + \bar{D}^2)}{\gamma \sigma^3 + 3\bar{D}\sigma^2 + \bar{D}^3}$$
-After cementation, the effective specific surface area follows the equation
+For an unconsolidated sand of variable sizes, the specific surface area is  
+$$a_u=\frac{6(\sigma^2+\bar{D}^2)}{\gamma\sigma^3+3\bar{D}\sigma^2+\bar{D}^3}$$
+After cementation, the effective specific surface area follows the equation  
 $$a_e = a_u \frac{1-\phi_u}{1-\phi} + a_b P_b + a_f P_f$$
 where $a_u$ is the specific surface area for an unconsolidated, uncemented sand, $\phi_o$ is the porosity of an unconsolidated sand, $a_b$ is the specific surface area for a pore-bridging cement, $a_f$ is the specific surface area for a pore-filling cement, and $P_b,P_f$ are the relative fractions of pore-bridging and pore-filling cement, respectively.  
     
-Taking these equations together, the equation for permeability becomes
-$$\begin{align}
-k &= \left[\bar{D}^2 \phi^3 \left(\gamma C_D^3 + 3C_D^2 + 1 \right)^2 \right] \\
- &\left\{ 2\tau_e (1-\phi)^2 \left[ 6\left(1+C_D^2 \right) \frac{1-\phi_u}{1-\phi} + 
- \left(a_b P_b + a_f P_f \right) \bar{D} \left(\gamma C_D^3 + 3C_D^2 +1 \right) \right]^2\right\}^{-1}
- \end{align}$$
+Taking these equations together, the equation for permeability becomes  
+<!--$$\begin{align}-->
+$$k = \left[\bar{D}^2 \phi^3 \left(\gamma C_D^3+3C_D^2+1\right)^2\right]\times$$ $$\left\{2\tau_e (1-\phi)^2 \left[ 6\left(1+C_D^2\right)\frac{1-\phi_u}{1-\phi}+\left(a_b P_b + a_f P_f \right) \bar{D} \left(\gamma C_D^3 + 3C_D^2 +1 \right) \right]^2\right\}^{-1}$$
+ <!--\end{align}$$-->
 Now, with these calculations, the properties of the grain size distribution measured by Ehrenberg (1990) can be used to test the theory derived by Panda and Lake (1995).
 
 <!-- \begin{align} -->
@@ -896,20 +896,19 @@ Now, with these calculations, the properties of the grain size distribution meas
 In this appendix we relate median grain size and the Trask Sorting Coefficient ($S_o$) to the mean, standard deviation, and skewness of the grain size distribution. From the mean and standard deviation, the coefficient of variation, $C_v = \bar{D}/\sigma$, can be calculated.
 
 Grain size distribution is often described by the median grain size and the Trask Sorting Coefficient ($S_o$), which is defined by $S_o=\sqrt{D_{0.75}/D_{0.25}}$, where $D_p$ is the quantile value indicated by $p$, such that $D_{0.25}$ is the 25%-ile grain size. Panda (1994, Appendix B) derived an equation relating average grain size, Trask Sorting Coefficient, and the standard deviation of the grain size, which is
-\begin{equation}
-\sigma = \bar{D} \frac{S_o^2-1}{0.675\left(S_o^2+1\right)}.
-\end{equation}
+
+$$\sigma = \bar{D} \frac{S_o^2-1}{0.675\left(S_o^2+1\right)}.$$
 This equation assumes that $D_p$ is calculated from the distribution of grain sizes in $\log_2$ space, but most calculations of $S_o$ use the definition provided above, so this should be re-derived.  
 
 A new derivation, assuming lognormaly distributed grain sizes, can be described with the PDF
-\begin{equation}
-\frac{1}{x\sigma\sqrt{2\pi}} \exp\left(-\frac{(\ln x-\mu)^2}{2\sigma^2} \right),
-\end{equation}
+
+$$\frac{1}{x\sigma\sqrt{2\pi}} \exp\left(-\frac{(\ln x-\mu)^2}{2\sigma^2} \right),$$
+
 the mean grain size is $\bar{D} = \exp(\mu + \sigma/2)$, and in terms of the median and Trask sorting coefficient, the parameters of the distribution are
-$$\begin{align}
-\mu &= \ln D_{0.5}\\
-\sigma &= \frac{\ln S_o}{\sqrt{2}\ \text{erf}^{-1}(0.5)}
-\end{align}$$
+<!--$$\begin{align}-->
+$$\mu = \ln D_{0.5}$$
+$$\sigma = \frac{\ln S_o}{\sqrt{2}\ \text{erf}^{-1}(0.5)}$$
+<!--\end{align}$$-->
 
 Simple R code to test these statistics is given below. It generates numbers from a random lognormal distribution:
 ```{r lognormal_stats, echo=TRUE}
@@ -941,14 +940,14 @@ cat(
 ```
 
 The mean grain size can be calculated from the median grain size and standard deviation through the equation (assuming a lognormal distribution of the grain size). In addition, the coefficient of variation and skewness can be calculated. The equations for these terms are
-$$\begin{align}
-\bar{D} &= \exp \left[ \ln(D_{\text{0.5}}) + \sigma/2 \right] \\
-        &= D_{0.5} S_o^{1/{(2\sqrt{2}\ \text{erf}^{-1}(0.5)})} \\
-        &= D_{0.5} S_o^{1.349}\\
-C_D &= \sqrt{e^{\sigma^2}-1} \\
-    &= \sqrt{e^{2.198(\ln S_o)^2} -1} \\
-\gamma &= \left(e^{\sigma^2} + 2\right) \sqrt{e^{\sigma^2}-1} \\
-       &= \left(e^{\sigma^2} + 2\right) C_D  \\
-       &= \left( e^{2.198(\ln S_o)^2} + 2\right)\sqrt{e^{2.198(\ln S_o)^2} -1}
-\end{align}$$
+<!--$$\begin{align}-->
+$$\bar{D} = \exp \left[ \ln(D_{\text{0.5}}) + \sigma/2 \right] \\
+        = D_{0.5} S_o^{1/{(2\sqrt{2}\ \text{erf}^{-1}(0.5)})} \\
+        = D_{0.5} S_o^{1.349}$$
+$$C_D = \sqrt{e^{\sigma^2}-1} \\
+    = \sqrt{e^{2.198(\ln S_o)^2} -1}$$
+$$\gamma = \left(e^{\sigma^2} + 2\right) \sqrt{e^{\sigma^2}-1} \\
+       = \left(e^{\sigma^2} + 2\right) C_D  \\
+       = \left( e^{2.198(\ln S_o)^2} + 2\right)\sqrt{e^{2.198(\ln S_o)^2} -1}$$
+<!--\end{align}$$-->
 These equations are used in this manuscript to determine the Carman Kozeny coefficients for each sample.
