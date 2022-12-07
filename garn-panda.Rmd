@@ -32,20 +32,22 @@ figdir <- "figures/"
 
 theme_set(theme_light())
 
-df <- readWorksheetFromFile("C:/Users/malef/Dropbox/ROZ/data/GARN1990.xlsx", sheet=1) %>%
+df <- readWorksheetFromFile("data/Garn1990.xlsx", sheet = 1) %>%
   mutate_at(vars(CD:IMP), ~ as.numeric(.)) %>%
   mutate(WELL = str_trim(WELL)) %>%
   ## Replace zeros in interparticle porosity and cement content to a value below the lowest measurable quantity
-  mutate(IMP = replace(IMP, IMP==0, 0.2),
-         ICL  = replace(ICL, ICL==0, 0.1),
-         QCM = replace(QCM, QCM==0, 0.1)) %>%
+  mutate(
+    IMP = replace(IMP, IMP == 0, 0.2),
+    ICL = replace(ICL, ICL == 0, 0.1),
+    QCM = replace(QCM, QCM == 0, 0.1)
+  ) %>%
   select(WELL, KLH, POR, IMP, GS, SO, KAO, ICL, QCM, CAL, DOL) %>%
   drop_na()
 
-#str(df)
+# str(df)
 
-df_name <-readWorksheetFromFile("C:/Users/malef/Dropbox/ROZ/data/GARN1990.xlsx", sheet=2) %>%
-  rename(Var1=EXPLANATION.,explanation=Col2)
+df_name <- readWorksheetFromFile("data/Garn1990.xlsx", sheet = 2) %>%
+  rename(Var1 = EXPLANATION., explanation = Col2)
 
 erfinv <- function(x) qnorm((x + 1)/2)/sqrt(2)
 

@@ -17,15 +17,14 @@ require(caret)
 require(recipes)
 require(iml)
 require(reshape2)
-#library(ggtern)
 
-df <- readWorksheetFromFile("C:/Users/malef/Dropbox/ROZ/data/GARN1990.xlsx", sheet=1) %>%
+df <- readWorksheetFromFile("data/Garn1990.xlsx", sheet = 1) %>%
   mutate_at(vars(CD:IMP), ~ as.numeric(.)) %>%
   mutate(WELL = str_trim(WELL)) %>%
   select(-CHT)
 
-df_name <-readWorksheetFromFile("C:/Users/malef/Dropbox/ROZ/data/GARN1990.xlsx", sheet=2) %>%
-  rename(Var1=EXPLANATION.,explanation=Col2)
+df_name <- readWorksheetFromFile("data/Garn1990.xlsx", sheet = 2) %>%
+  rename(Var1 = EXPLANATION., explanation = Col2)
 
 figdir <- "figures/"
 ```
