@@ -27,12 +27,12 @@ require(recipes)
 require(iml)
 library(reshape2)
 library(ggridges)
+library(glmnet)
 require(dplyr)
 require(doParallel)
 require(xgboost)
 library(knitr)
 library(kableExtra)
-#library(ggtern)
 figdir <- "figures/"
 
 theme_set(theme_pubr())
@@ -55,94 +55,101 @@ porosity_cutoff <- 2.3
 df_name <- readWorksheetFromFile("data/Garn1990.xlsx", sheet = 2) %>%
   rename(Var1 = EXPLANATION., explanation = Col2)
 
-erfinv <- function(x) qnorm((x + 1)/2)/sqrt(2)
+erfinv <- function(x) qnorm((x + 1) / 2) / sqrt(2)
 
-df <- df %>% 
-  #distribution statistics, units conversions
-    mutate(POR = POR/100,       
-         IM_POR = IMP/100,
-         GS = GS*1e3,
-         mu = log(GS),
-         sigma = log(SO) / (sqrt(2) * erfinv(0.5)),
-         mean_GS = exp( mu + sigma/2),
-         Cv_GS = sqrt( exp( sigma^2) - 1),
-         gamma_GS = (exp(sigma^2) + 2) * Cv_GS,
-         CK_void_fraction = IM_POR^3/(1-IM_POR)^2,
-         logk = log(KLH),
-         porosity_group = if_else(IMP > porosity_cutoff, "High", "Low")
-         ) %>%
+df <- df %>%
+  # distribution statistics, units conversions
+  mutate(
+    POR = POR / 100,
+    IM_POR = IMP / 100,
+    GS = GS * 1e3,
+    mu = log(GS),
+    sigma = log(SO) / (sqrt(2) * erfinv(0.5)),
+    mean_GS = exp(mu + sigma / 2),
+    Cv_GS = sqrt(exp(sigma^2) - 1),
+    gamma_GS = (exp(sigma^2) + 2) * Cv_GS,
+    CK_void_fraction = IM_POR^3 / (1 - IM_POR)^2,
+    logk = log(KLH),
+    porosity_group = if_else(IMP > porosity_cutoff, "High", "Low")
+  ) %>%
   # Cementation, original porosity
-  mutate(P_f = (KAO + QCM + CAL + DOL)/100,
-         P_b = ICL/100,
-         POR_o = POR + P_f + P_b,
-         m = P_f * (1 - POR_o) / POR_o,
-         m_b = P_b * (1 - POR_o) / POR_o) %>%
+  mutate(
+    P_f = (KAO + QCM + CAL + DOL) / 100,
+    P_b = ICL / 100,
+    POR_o = POR + P_f + P_b,
+    m = P_f * (1 - POR_o) / POR_o,
+    m_b = P_b * (1 - POR_o) / POR_o
+  ) %>%
   # tortuosity and specific surface area
   mutate(
-         #tau_o = (0.9*IM_POR/(1-0.1*IM_POR))^(-0.378),
-         #tau_o = (0.9*IM_POR/(1-0.1*IM_POR))^(-0.378*2),
-         #tau_o = sqrt( 2 / 3 * POR / (1 - 1.209*(1-POR)^(2/3)) + 1/3), ## goes imaginary fast
-         #tau_o = (0.9 * POR / (1 - 0.1 * POR))^-0.378,
-         tau_o = sqrt( 2/ 3 * 0.36 / (1 - 1.209*(1-0.36)^(2/3)) + 1/3), # assume random close packing
-         tau_u = tau_o * (1+Cv_GS),
-         a_o = 6 / mean_GS,
-         tau_e = tau_u * (1+Cv_GS) * (1+ 2*m_b/(1-m_b))^2 * (1 + 2*m/((1-m) * POR^(1/3.0)))^2,
-         a_u = 6* (sigma^2 + mean_GS^2)/(gamma_GS * sigma^2 + 3*mean_GS*sigma^2 + mean_GS^3),
-         a_e_sorta = a_u * (1 - POR)/(1 - POR) #+ a_b*P_b + a_f*P_f
-         ) %>%
+    # tau_o = (0.9*IM_POR/(1-0.1*IM_POR))^(-0.378),
+    # tau_o = (0.9*IM_POR/(1-0.1*IM_POR))^(-0.378*2),
+    # tau_o = sqrt( 2 / 3 * POR / (1 - 1.209*(1-POR)^(2/3)) + 1/3), ## goes imaginary fast
+    # tau_o = (0.9 * POR / (1 - 0.1 * POR))^-0.378,
+    tau_o = sqrt(2 / 3 * 0.36 / (1 - 1.209 * (1 - 0.36)^(2 / 3)) + 1 / 3), # assume random close packing
+    tau_u = tau_o * (1 + Cv_GS),
+    a_o = 6 / mean_GS,
+    tau_e = tau_u * (1 + Cv_GS) * (1 + 2 * m_b / (1 - m_b))^2 * (1 + 2 * m / ((1 - m) * POR^(1 / 3.0)))^2,
+    a_u = 6 * (sigma^2 + mean_GS^2) / (gamma_GS * sigma^2 + 3 * mean_GS * sigma^2 + mean_GS^3),
+    a_e_sorta = a_u * (1 - POR) / (1 - POR) #+ a_b*P_b + a_f*P_f
+  ) %>%
   # Permeability predictions
-  mutate(k_pl94_por = (mean_GS^2 * POR^3)/(72* tau_u * (1-POR)^2) * (gamma_GS * Cv_GS^3 + 3*Cv_GS^2 + 1)^2/(1 + Cv_GS^2)^2,
-         k_pl94_impor = (mean_GS^2 * IM_POR^3)/(72* tau_u * (1-IM_POR)^2) * (gamma_GS * Cv_GS^3 + 3*Cv_GS^2 + 1)^2/(1 + Cv_GS^2)^2
-         )
+  mutate(
+    k_pl94_por = (mean_GS^2 * POR^3) / (72 * tau_u * (1 - POR)^2) * (gamma_GS * Cv_GS^3 + 3 * Cv_GS^2 + 1)^2 / (1 + Cv_GS^2)^2,
+    k_pl94_impor = (mean_GS^2 * IM_POR^3) / (72 * tau_u * (1 - IM_POR)^2) * (gamma_GS * Cv_GS^3 + 3 * Cv_GS^2 + 1)^2 / (1 + Cv_GS^2)^2
+  )
 
 # Use Mcluster to find the split in interparticle macro-porosity between low and high porosity.
-#library(mclust, quietly = TRUE)
-#fit <- Mclust(log(df$IMP), G=2, model='V')
-#summary(fit)
-#plot(fit, what="classification")
-#sort(df$IMP)[[48]]
+# library(mclust, quietly = TRUE)
+# fit <- Mclust(log(df$IMP), G=2, model='V')
+# summary(fit)
+# plot(fit, what="classification")
+# sort(df$IMP)[[48]]
 
 set.seed(43)
-holdout.wells <- sample(unique(df$WELL), size=4)
+holdout.wells <- sample(unique(df$WELL), size = 4)
 df_holdout <- filter(df, WELL %in% holdout.wells)
 df <- filter(df, !WELL %in% holdout.wells)
 
 
 ## split between high and low phi
-df_lowphi <- filter(df, porosity_group=="Low")
-df_highphi <- filter(df, porosity_group!="Low")
+df_lowphi <- filter(df, porosity_group == "Low")
+df_highphi <- filter(df, porosity_group != "Low")
 
-df_holdout_lp <- filter(df_holdout, porosity_group=="Low")
-df_holdout_hp <- filter(df_holdout, porosity_group!="Low")
+df_holdout_lp <- filter(df_holdout, porosity_group == "Low")
+df_holdout_hp <- filter(df_holdout, porosity_group != "Low")
 
 ## Building recipes
-rec_obj_lp <- recipe(KLH ~ CK_void_fraction + tau_e + a_u + P_f + P_b + WELL, data=df_lowphi) %>%
+rec_obj_lp <- recipe(KLH ~ CK_void_fraction + tau_e + a_u + P_f + P_b + WELL, data = df_lowphi) %>%
   step_log(KLH) %>%
   update_role(WELL, new_role = "dataset split variable") %>%
   step_log(all_predictors()) %>%
   step_center(all_predictors()) %>%
   step_scale(all_predictors()) %>%
-  prep(training=df_lowphi, retain=TRUE)
+  prep(training = df_lowphi, retain = TRUE)
 
 train_lp <- bake(rec_obj_lp, df_lowphi)
-test_lp <- bake(rec_obj_lp, filter(df_holdout, IMP <= porosity_cutoff)) 
+test_lp <- bake(rec_obj_lp, filter(df_holdout, IMP <= porosity_cutoff))
 
-rec_obj_hp <- recipe(KLH ~ CK_void_fraction + tau_e + a_u + P_f + P_b + WELL, data=df_highphi) %>%
+rec_obj_hp <- recipe(KLH ~ CK_void_fraction + tau_e + a_u + P_f + P_b + WELL, data = df_highphi) %>%
   step_log(KLH) %>%
   update_role(WELL, new_role = "dataset split variable") %>%
   step_log(all_predictors()) %>%
   step_center(all_predictors()) %>%
   step_scale(all_predictors()) %>%
-  prep(training=df_highphi, retain=TRUE)
+  prep(training = df_highphi, retain = TRUE)
 train_hp <- bake(rec_obj_hp, df_highphi)
 test_hp <- bake(rec_obj_hp, filter(df_holdout, IMP > porosity_cutoff))
 
 ## Fit control for cross validation
-fit_control_lp <- trainControl(index = groupKFold(train_lp$WELL),
-                            allowParallel = TRUE)
-fit_control_hp <- trainControl(index = groupKFold(train_hp$WELL),
-                            allowParallel = TRUE)
-
+fit_control_lp <- trainControl(
+  index = groupKFold(train_lp$WELL),
+  allowParallel = TRUE
+)
+fit_control_hp <- trainControl(
+  index = groupKFold(train_hp$WELL),
+  allowParallel = TRUE
+)
 ```
 
 # Abstract
@@ -229,71 +236,71 @@ Therefore, when we performed regressions on the data, we treated each mode separ
 There are `r length(train_hp$KLH)` points in the high porosity training set, `r length(test_hp$KLH)` points in the high porosity testing set, `r length(train_lp$KLH)` points in the low porosity training set, and `r length(test_lp$KLH)` points in the low porosity testing set.
 
 ```{r exploratory, fig.width=7, fig.height=5, warning=FALSE}
-#Permeability Box-Cox
 
-#bc <- boxcox(KLH ~ 1, data = df)
-plot_hist <- function(x, bins = 12){
+plot_hist <- function(x, bins = 12) {
   x <- enquo(x)
   p <- ggplot(df, aes(x = !!x)) +
-    geom_histogram(fill="steelblue", bins = bins) +
+    geom_histogram(fill = "steelblue", bins = bins) +
     annotation_logticks(sides = "b") +
-    scale_y_continuous("Count", expand = c(0.001,0))
+    scale_y_continuous("Count", expand = c(0.001, 0))
   p
 }
 
-p1 <- 
+p1 <-
   plot_hist(KLH) +
-  scale_x_log10("Permeability (mD)", breaks = c(0.1,1,10,100,1000), labels = c(0.1,1,10,100,1000))
+  scale_x_log10("Permeability (mD)", breaks = c(0.1, 1, 10, 100, 1000), labels = c(0.1, 1, 10, 100, 1000))
 
-p2 <- 
+p2 <-
   plot_hist(IMP) +
-  scale_x_log10("Interparticle macro-porosity (p.u.)", 
-                breaks = c(0.3, 1, 3, 10, 30), 
-                labels = c(0.3, 1, 3, 10, 30))
+  scale_x_log10("Interparticle macro-porosity (p.u.)",
+    breaks = c(0.3, 1, 3, 10, 30),
+    labels = c(0.3, 1, 3, 10, 30)
+  )
 
-p3 <- 
+p3 <-
   plot_hist(CK_void_fraction) +
-  scale_x_log10("Carman-Kozeny void fraction") 
+  scale_x_log10("Carman-Kozeny void fraction")
 
 df_name_cements <- df_name %>%
-  mutate(cement_type = gsub("([A-Za-z\\-]+).*", "\\1",explanation),
-         cement_type = gsub("Non-kaolin","Non-kaolin clay", cement_type))
- df_name_cements$cement_type = factor(df_name_cements$cement_type, 
-                                      levels = c("Quartz","Non-kaolin clay", "Kaolin", "Siderite",
-                                                 "Pyrite","K-feldspar","Dolomite","Detrital","Calcite")
- )
-p4 <- 
+  mutate(
+    cement_type = gsub("([A-Za-z\\-]+).*", "\\1", explanation),
+    cement_type = gsub("Non-kaolin", "Non-kaolin clay", cement_type)
+  )
+df_name_cements$cement_type <- factor(df_name_cements$cement_type,
+  levels = c(
+    "Quartz", "Non-kaolin clay", "Kaolin", "Siderite",
+    "Pyrite", "K-feldspar", "Dolomite", "Detrital", "Calcite"
+  )
+)
+p4 <-
   df %>%
-  select(KAO,ICL,QCM, DOL) %>%
+  select(KAO, ICL, QCM, DOL) %>%
   drop_na() %>%
-  reshape2::melt(value.name = "Percent", measure.vars = c("DOL","KAO","ICL","QCM"))  %>% 
-  merge(df_name_cements, by.x = "variable", by.y ="Var1") %>%
-  #mutate(cement_type = reorder(cement_type, }))
-  ggplot(aes(x=Percent, y=reorder(cement_type, desc(cement_type)))) +
-  geom_density_ridges(fill="steelblue", stat = "binline", binwidth = 2, scale = 3) +
-  scale_x_continuous(limits=c(0,22), expand=c(0,0)) +
-  scale_y_discrete(expand = c(0.01,0)) +
-  #theme_ridges() +
-  labs(x="Cement percent abundance", y="")
+  reshape2::melt(value.name = "Percent", measure.vars = c("DOL", "KAO", "ICL", "QCM")) %>%
+  merge(df_name_cements, by.x = "variable", by.y = "Var1") %>%
+  ggplot(aes(x = Percent, y = reorder(cement_type, desc(cement_type)))) +
+  geom_density_ridges(fill = "steelblue", stat = "binline", binwidth = 2, scale = 3) +
+  scale_x_continuous(limits = c(0, 22), expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0.01, 0)) +
+  labs(x = "Cement percent abundance", y = "")
 ggarrange(p1, p2, p3, p4, ncol = 2, nrow = 2, labels = "auto")
-
-
 ```
 
 Figure 1. Histograms for the distributions of a) Klinkenberg-corrected absolute permeability b) interparticle macro-porosity from point-counting c) Carman-Kozeny void fraction from macro-porosity d) Percent abundances (total area fraction) of cement. The permeability and porosity, both log-transformed, follow bimodal distributions. Quartz is the most abundant cement, followed by non-kaolin clay (smectite and illite).  
   
 Next, we cross-plotted permeability against several individual predictors (Fig. 2): Carman-Kozeny void fraction, tortuosity, pre-cementation specific surface area, and fraction of pore-bridging and pore-filling cement. Pore-filling cement includes quartz, kaolin clay, and dolomite, and pore-bridging cement is non-kaolin clay.  
 ```{r crossplots, fig.width=7, fig.height=7, warning=FALSE}
-crossplot <- function(x){
+crossplot <- function(x) {
   x <- ensym(x)
   p <- ggplot(df, aes(!!x, KLH, color = porosity_group)) +
     geom_point() +
-    #scale_x_log10() +
-    scale_y_log10("Permeability (mD)", breaks = c(0.1, 1, 10, 100, 1000, 10000), 
-                  labels = c(0.1, 1, 10, 100, 1000, 10000))  +
+    scale_y_log10("Permeability (mD)",
+      breaks = c(0.1, 1, 10, 100, 1000, 10000),
+      labels = c(0.1, 1, 10, 100, 1000, 10000)
+    ) +
     annotation_logticks(sides = "bl") +
-    scale_color_manual("Porosity\ngroup", values = c("peru","steelblue"))
-  
+    scale_color_manual("Porosity\ngroup", values = c("peru", "steelblue"))
+
   p
 }
 p0 <- crossplot(IMP) +
@@ -315,15 +322,14 @@ p3 <- crossplot(a_u) +
   labs(x = "Specific surface area for grains")
 
 p4 <- crossplot(P_b) +
-  labs(x = "Pore bridging cement")+
+  labs(x = "Pore bridging cement") +
   scale_x_log10(limits = c(0.003, 0.3))
 
 p5 <- crossplot(P_f) +
   labs(x = "Pore filling cement") +
   scale_x_log10(limits = c(0.003, 0.3))
 
-ggarrange(p0,p1, p2, p3, p4, p5, ncol = 2, nrow = 3, labels = "auto", legend = "right", common.legend = TRUE)
-
+ggarrange(p0, p1, p2, p3, p4, p5, ncol = 2, nrow = 3, labels = "auto", legend = "right", common.legend = TRUE)
 ```  
 
 Figure 2. Cross-plots between permeability and several predictor variables. These variables include a) the interparticle macro-porosity b) the Carman-Kozeny void fraction, c) tortuosity as calculated in Panda and Lake (1995), d) specific surface area in reciprocal square microns for the grains (pre-cementation), e) fraction of pore-bridging cement f) fraction of pore-filling cement. The color indicates whether the sample has greater than `r porosity_cutoff` percent porosity (orange) or not (blue).  
@@ -332,26 +338,32 @@ To assign values to the correspondence between the predictor variables and perme
   
 Table 1. Pearson r and Kendall tau values for correlation between log-transformed predictor variables and log permeability. The data is split between modes of the porosity distribution, based on whether or not the porosity is greater than `r porosity_cutoff`. Tortuosity is calculated after taking cementation into account; specific surface area is calculated without including cementation – making the presence of pore-bridging and pore-filling cements into proxies for specific surface area.
 ```{r correlations}
-df2 <- data.table::as.data.table(df)[,list(Permeability = KLH, 
-                                           `Carman-Kozeny void fraction` = CK_void_fraction, 
-                                           Tortuosity=tau_e, 
-                                           `Specific surface area`=a_u, 
-                                           `Pore-bridging cement`=P_b, 
-                                           `Pore-filling cement`=P_f,
-                                           `Porosity group`=porosity_group)]
+df2 <- data.table::as.data.table(df)[, list(
+  Permeability = KLH,
+  `Carman-Kozeny void fraction` = CK_void_fraction,
+  Tortuosity = tau_e,
+  `Specific surface area` = a_u,
+  `Pore-bridging cement` = P_b,
+  `Pore-filling cement` = P_f,
+  `Porosity group` = porosity_group
+)]
 
 
 df2 %>%
-  melt(measure.vars = c("Carman-Kozeny void fraction", "Tortuosity","Specific surface area", "Pore-bridging cement", 
-                        "Pore-filling cement")) %>%
-  drop_na %>%
+  melt(measure.vars = c(
+    "Carman-Kozeny void fraction", "Tortuosity", "Specific surface area", "Pore-bridging cement",
+    "Pore-filling cement"
+  )) %>%
+  drop_na() %>%
   group_by(variable, `Porosity group`) %>%
-  dplyr::summarize(`Pearson r` = round( cor( log(Permeability), log(value)), 2), 
-                   `Kendall tau` = round(cor(Permeability, value, method = "kendall"), 2)) %>%
+  dplyr::summarize(
+    `Pearson r` = round(cor(log(Permeability), log(value)), 2),
+    `Kendall tau` = round(cor(Permeability, value, method = "kendall"), 2)
+  ) %>%
   melt(measure.vars = c("Pearson r", "Kendall tau"), variable.name = "Correlation") %>%
-  dcast(`Porosity group` + Correlation ~ variable ) %>%
-  kable(format="pandoc") #%>%
-  #kable_styling()
+  dcast(`Porosity group` + Correlation ~ variable) %>%
+  kable(format = "pandoc") # %>%
+# kable_styling()
 ```
 
 The two correlation measures show similar values within each porosity group, however they take on different values between the porosity groups, with less correlation at low porosity. Porosity is the most strongly correlated with permeability, with cements next, and tortuosity and specific surface area having the weakest correlations.
@@ -365,64 +377,69 @@ We tested the accuracies and correlations between the physics-based and regressi
 The results from these models of increasing complexity are shown in Fig. 3.
 
 ```{r physics_based, fig.width=7, fig.height=5}
-reg_plot <- function(df, kpred){
+reg_plot <- function(df, kpred) {
   kpred <- enquo(kpred)
-  p <- 
+  p <-
     ggplot(df, aes(KLH, !!kpred, color = porosity_group)) +
     geom_point() +
     geom_smooth(method = "lm") +
-    scale_x_log10("Actual permeability (mD)", breaks = c(0.1, 1, 10, 100, 1000, 1e4), 
-                  labels = c(0.1, 1, 10, 100, 1000, TeX("$10^4$"))) +
+    scale_x_log10("Actual permeability (mD)",
+      breaks = c(0.1, 1, 10, 100, 1000, 1e4),
+      labels = c(0.1, 1, 10, 100, 1000, TeX("$10^4$"))
+    ) +
     scale_y_log10("Predicted perm (mD)") +
     annotation_logticks(sides = "bl") +
-    scale_color_manual("Porosity\ngroup", values = c("peru","steelblue"))
-  
+    scale_color_manual("Porosity\ngroup", values = c("peru", "steelblue"))
+
   p
 }
 
 p1 <- df %>%
   reg_plot(CK_void_fraction / (2 * tau_o * a_o^2)) +
-  geom_abline(slope=1) +
+  geom_abline(slope = 1) +
   labs(title = "Unconsolidated")
 
 p2 <- df %>%
   reg_plot(k_pl94_impor) +
-  geom_abline(slope=1) +
+  geom_abline(slope = 1) +
   labs(title = "With compaction")
 
 p3 <- df %>%
   reg_plot(CK_void_fraction / (2 * tau_e * a_e_sorta^2)) +
-  geom_abline(slope=1) +
+  geom_abline(slope = 1) +
   labs(title = "Compaction & cements")
 
-df3 <- data.table::as.data.table(df)[,list(Permeability = KLH, 
-                                           `Unconsolidated` = CK_void_fraction / (2 * tau_o * a_o^2), 
-                                           `With compaction`=k_pl94_impor, 
-                                           `Compaction & cements`=CK_void_fraction / (2 * tau_e * a_e_sorta^2),
-                                           `Porosity group`=porosity_group
-                                           )
-                                     ]
+df3 <- data.table::as.data.table(df)[, list(
+  Permeability = KLH,
+  `Unconsolidated` = CK_void_fraction / (2 * tau_o * a_o^2),
+  `With compaction` = k_pl94_impor,
+  `Compaction & cements` = CK_void_fraction / (2 * tau_e * a_e_sorta^2),
+  `Porosity group` = porosity_group
+)]
 
 
-p4 <- 
+p4 <-
   df3 %>%
-  melt(measure.vars = c("Unconsolidated", "With compaction","Compaction & cements")) %>%
-  drop_na %>%
+  melt(measure.vars = c("Unconsolidated", "With compaction", "Compaction & cements")) %>%
+  drop_na() %>%
   group_by(variable, `Porosity group`) %>%
-  dplyr::summarize(`Pearson r` = round( (cor( log(Permeability), log(value)) ^ 2), 2) 
-                   #`Kendall tau` = round(cor(Permeability, value, method = "kendall"), 2)
-                   ) %>%
+  dplyr::summarize(
+    `Pearson r` = round((cor(log(Permeability), log(value))^2), 2)
+    # `Kendall tau` = round(cor(Permeability, value, method = "kendall"), 2)
+  ) %>%
   melt(measure.vars = c("Pearson r"), variable.name = "Correlation") %>%
-  dcast(variable ~ `Porosity group` + Correlation ) %>%
-  rename(`Model R-square`=variable, `High porosity`= "High_Pearson r", `Low porosity` = "Low_Pearson r") %>%
-  #kable(format="pandoc")
-  ggtexttable(rows = rep("",3), 
-              theme = ttheme(base_size=9,
-                             colnames.style = colnames_style(size=9, fill = "white"),
-                             tbody.style = tbody_style(fill = "white", linecolor = "black", size = 8)) 
-              )
+  dcast(variable ~ `Porosity group` + Correlation) %>%
+  rename(`Model R-square` = variable, `High porosity` = "High_Pearson r", `Low porosity` = "Low_Pearson r") %>%
+  ggtexttable(
+    rows = rep("", 3),
+    theme = ttheme(
+      base_size = 9,
+      colnames.style = colnames_style(size = 9, fill = "white"),
+      tbody.style = tbody_style(fill = "white", linecolor = "black", size = 8)
+    )
+  )
 
-ggarrange(p1,p2, p3, p4, common.legend = TRUE, labels = "auto", legend = "right")
+ggarrange(p1, p2, p3, p4, common.legend = TRUE, labels = "auto", legend = "right")
 ```  
 
 Figure 3. Comparisons of physics-based models to measured permeability. The black line indicates perfect agreement. The colored lines are least-squares best fits. Shading indicates 95% uncertainty in the best fit line. a) Uses the Carman-Kozeny void fraction and the initial tortuosity and specific surface area expected from an uncompacted particle assemblage of the measured porosity and grain size. b) Considers compaction with the Panda-Lake (1994) model. c) Considers the impact of compaction and the effect of cementation on the tortuosity, following the Panda-Lake (1995) model. d) R^2^ for the log-permeability predicted by these models compared to observed in the core.  
@@ -435,7 +452,6 @@ $$\ln k \propto \ln \phi_{CK} + \ln a_u + \ln \tau_e + \ln P_b + \ln P_f, $$
 5. A gradient boosting model using the same predictor variables, but assuming no particular functional form between the variables and permeability
 
 ```{r enet_training}
-#, fig.width=5, fig.height=3
 cl <- makePSOCKcluster(12)
 registerDoParallel(cl)
 
@@ -448,12 +464,10 @@ grid_enet_lp <- expand.grid(
 fit_enet_lp <- train(
   KLH ~ CK_void_fraction + a_u + tau_e + P_b + P_f,
   data = train_lp,
-  method = 'glmnet',
+  method = "glmnet",
   trControl = fit_control_lp,
   tuneGrid = grid_enet_lp
 )
-
-##ggplot(fit_enet_lp)
 
 grid_enet_hp <- expand.grid(
   alpha = seq(0, 1, length = 50),
@@ -463,12 +477,10 @@ grid_enet_hp <- expand.grid(
 fit_enet_hp <- train(
   KLH ~ CK_void_fraction + a_u + tau_e + P_b + P_f,
   data = train_hp,
-  method = 'glmnet',
+  method = "glmnet",
   trControl = fit_control_hp,
   tuneGrid = grid_enet_hp
 )
-
-#ggplot(fit_enet_hp)
 ```
 
 ```{r xgboost_training}
@@ -477,7 +489,7 @@ cl <- makePSOCKcluster(12)
 registerDoParallel(cl)
 
 grid_lp <- expand.grid(
-  nrounds = 700, #seq(100, 2000, by = 20),
+  nrounds = 700, # seq(100, 2000, by = 20),
   eta = 0.02,
   max_depth = 1,
   gamma = 0,
@@ -489,18 +501,16 @@ grid_lp <- expand.grid(
 fit_xgboost_lp <- train(
   logk ~ CK_void_fraction + tau_e + P_b + P_f,
   data = df_lowphi,
-  method = 'xgbTree',
+  method = "xgbTree",
   trControl = fit_control_lp,
   tuneGrid = grid_lp
 )
-#ggplot(fit_xgboost_lp)
-#fit_xgboost_lp$results %>% arrange(RMSE)
 
 grid_hp <- expand.grid(
   nrounds = seq(40, 500, by = 10),
   max_depth = 1,
   eta = 0.015,
-  gamma =  0.94,
+  gamma = 0.94,
   colsample_bytree = 0.69,
   min_child_weight = 7,
   subsample = 0.23
@@ -509,70 +519,72 @@ grid_hp <- expand.grid(
 fit_xgboost_hp <- train(
   logk ~ CK_void_fraction + tau_e + P_b + P_f,
   data = df_highphi,
-  method = 'xgbTree',
+  method = "xgbTree",
   trControl = fit_control_hp,
   tuneGrid = grid_hp
 )
-##ggplot(fit_xgboost_hp)
-##fit_xgboost_hp$results %>% arrange(RMSE)
 ```
 
 ```{r model_results, fig.height=5.5, fig.width=7}
 
-p1 <- 
+p1 <-
   bind_rows(
-  df_lowphi %>%
-  mutate(
-    Linear = exp(predict(fit_enet_lp,train_lp)),
-    `Gradient boosting` = exp(predict(fit_xgboost_lp,.))),
-  df_highphi %>%
-    mutate(
-      Linear = exp(predict(fit_enet_hp,train_hp)),
-      `Gradient boosting` = exp(predict(fit_xgboost_hp, .)))
-  )%>%
-  gather("Model","k_pred", Linear, `Gradient boosting` ) %>%
-  ggplot(aes(x = KLH, y = k_pred, color = porosity_group)) + 
+    df_lowphi %>%
+      mutate(
+        Linear = exp(predict(fit_enet_lp, train_lp)),
+        `Gradient boosting` = exp(predict(fit_xgboost_lp, .))
+      ),
+    df_highphi %>%
+      mutate(
+        Linear = exp(predict(fit_enet_hp, train_hp)),
+        `Gradient boosting` = exp(predict(fit_xgboost_hp, .))
+      )
+  ) %>%
+  gather("Model", "k_pred", Linear, `Gradient boosting`) %>%
+  ggplot(aes(x = KLH, y = k_pred, color = porosity_group)) +
   facet_wrap(~Model) +
   geom_point() +
-  geom_abline(slope=1,intercept=0) +
-  scale_color_manual("Porosity\ngroup",values = c("peru", "steelblue")) +
+  geom_abline(slope = 1, intercept = 0) +
+  scale_color_manual("Porosity\ngroup", values = c("peru", "steelblue")) + # = c("black", "black")) +
   annotation_logticks(sides = "bl") +
-  scale_x_log10("Measured permeability (mD)", 
-                breaks = c(0.1, 1, 10, 100, 1000),
-                labels = c(0.1, 1, 10, 100, 1000)
-                ) +
-  scale_y_log10("Predicted perm (mD)") 
+  scale_x_log10("Measured permeability (mD)",
+    breaks = c(0.1, 1, 10, 100, 1000),
+    labels = c(0.1, 1, 10, 100, 1000)
+  ) +
+  scale_y_log10("Predicted perm (mD)")
 
-#p1
-p2 <- 
-bind_rows(
-  df_lowphi %>%
-  mutate(
-    Linear = resid(fit_enet_lp,train_lp),
-    `Gradient boosting` = resid(fit_xgboost_lp,.)),
-  df_highphi %>%
-    mutate(
-      Linear = resid(fit_enet_hp,train_hp),
-      `Gradient boosting` = resid(fit_xgboost_hp, .))
-  )%>%
-  gather("Model","residual", Linear, `Gradient boosting` ) %>%
-  ggplot(aes(x = KLH, y = residual, color = porosity_group)) + 
+# ggsave("predict_compare.png", p1, width=7, height=3.5)
+p2 <-
+  bind_rows(
+    df_lowphi %>%
+      mutate(
+        Linear = resid(fit_enet_lp, train_lp),
+        `Gradient boosting` = resid(fit_xgboost_lp, .)
+      ),
+    df_highphi %>%
+      mutate(
+        Linear = resid(fit_enet_hp, train_hp),
+        `Gradient boosting` = resid(fit_xgboost_hp, .)
+      )
+  ) %>%
+  gather("Model", "residual", Linear, `Gradient boosting`) %>%
+  ggplot(aes(x = KLH, y = residual, color = porosity_group)) +
   facet_wrap(~Model) +
   geom_point() +
-  geom_abline(slope=0,intercept=0) +
-  geom_smooth(method = 'rlm', se=FALSE) +
-  scale_color_manual("Porosity\ngroup",values = c("peru", "steelblue")) +
+  geom_abline(slope = 0, intercept = 0) +
+  geom_smooth(method = "rlm", se = FALSE) +
+  scale_color_manual("Porosity\ngroup", values = c("peru", "steelblue")) +
   annotation_logticks(sides = "b") +
-  scale_x_log10("Measured permeability (mD)", 
-                breaks = c(0.1, 1, 10, 100, 1000),
-                labels = c(0.1, 1, 10, 100, 1000)
-                ) +
-  scale_y_continuous("Residual (log mD)") 
+  scale_x_log10("Measured permeability (mD)",
+    breaks = c(0.1, 1, 10, 100, 1000),
+    labels = c(0.1, 1, 10, 100, 1000)
+  ) +
+  scale_y_continuous("Residual (log mD)")
 
-#p2
-ggarrange(p1, p2, ncol =1, common.legend=TRUE, legend = "right", labels ="auto")
+# p2
+ggarrange(p1, p2, ncol = 1, common.legend = TRUE, legend = "right", labels = "auto")
 
-#max(exp(predict(fit_xgboost_hp, df_highphi)))
+# max(exp(predict(fit_xgboost_hp, df_highphi)))
 ```
 
 Figure 4. a) Predicted versus measured permeability using the linear and gradient boosting models. b) Residuals in the predictions for the linear and gradient boosting models. Color indicates whether the sample is in the high (greater than `r porosity_cutoff`%) or low porosity group. Lines indicate the trends in the residual.  
@@ -582,18 +594,18 @@ As perhaps best shown by the residuals and best fit lines (Fig. 4b), neither mod
 ```{r winland_feature_importance, fig.width=5, fig.height=3}
 importance_lp <- varImp(fit_enet_lp)$importance
 importance_hp <- varImp(fit_enet_hp)$importance
-importances <- as.data.frame(cbind( rownames(importance_lp), importance_lp, importance_hp))
-importances[,1] = c("Carman-Kozeny void fraction", "Specific surface area", "Tortuosity","Pore-bridging cement", "Pore-filling cement")
+importances <- as.data.frame(cbind(rownames(importance_lp), importance_lp, importance_hp))
+importances[, 1] <- c("Carman-Kozeny void fraction", "Specific surface area", "Tortuosity", "Pore-bridging cement", "Pore-filling cement")
 colnames(importances) <- c("Feature", "Low", "High")
 importances <- importances %>%
-  gather("Low", "High", key="Porosity group", value="Importance")
+  gather("Low", "High", key = "Porosity group", value = "Importance")
 ggplot(importances, aes(Feature, Importance, fill = `Porosity group`)) +
-  geom_bar(stat="identity", position = "dodge") +
+  geom_bar(stat = "identity", position = "dodge") +
   coord_flip() +
   scale_fill_manual(values = c("peru", "steelblue"))
 
-predictor = Predictor$new(fit_enet_lp, data = select(df, CK_void_fraction, tau_e, P_b, P_f, a_u), y = log(df$KLH))
-imp = FeatureImp$new(predictor, loss = "rmse", n.repetitions = 40)
+predictor <- Predictor$new(fit_enet_lp, data = select(df, CK_void_fraction, tau_e, P_b, P_f, a_u), y = log(df$KLH))
+imp <- FeatureImp$new(predictor, loss = "rmse", n.repetitions = 40)
 ```
 
 Figure 5. Feature importance for the linear model. Color indicates whether the model was trained on high (greater than `r porosity_cutoff`%) or low porosity samples. No bar indicates that the regularization procedure caused the weight for that feature to reach zero.  
@@ -601,51 +613,53 @@ Figure 5. Feature importance for the linear model. Color indicates whether the m
 The linear model shows different features are important for high versus low porosity samples (Fig. 5). Carman-Kozeny void fraction is the most important factor for high porosity rock, followed by tortuosity and specific surface area. For low porosity samples, tortuosity and the fraction of pore-bridging cement are the most important features. In neither group is the fraction of pore-filling cement an important feature, both models assign it zero weight (i.e., it does not directly influence permeability).
 
 ```{r xgboost_feature importance}
-shaps_lp <- xgb.plot.shap(as.matrix(select(df_lowphi, CK_void_fraction, tau_e, P_b, P_f)), 
-                       model=fit_xgboost_lp$finalModel, 
-                       top_n=4, plot = FALSE)
+shaps_lp <- xgb.plot.shap(as.matrix(select(df_lowphi, CK_void_fraction, tau_e, P_b, P_f)),
+  model = fit_xgboost_lp$finalModel,
+  top_n = 4, plot = FALSE
+)
 
-shaps_hp <- xgb.plot.shap(as.matrix(select(df_highphi, CK_void_fraction, tau_e, P_b, P_f)), 
-                       model=fit_xgboost_hp$finalModel, 
-                       top_n=4, plot = FALSE)
+shaps_hp <- xgb.plot.shap(as.matrix(select(df_highphi, CK_void_fraction, tau_e, P_b, P_f)),
+  model = fit_xgboost_hp$finalModel,
+  top_n = 4, plot = FALSE
+)
 
-data <- rbind(merge(melt(shaps_lp$shap_contrib, value.name="SHAP"),
-              melt(shaps_lp$data, value.name="Value")
-                    ) %>%
-                mutate(`Porosity group`="Low"),
-              merge(melt(shaps_hp$shap_contrib, value.name="SHAP"),
-              melt(shaps_hp$data, value.name="Value")
-                    ) %>%
-                mutate(`Porosity group`="High")
+data <- rbind(
+  merge(
+    melt(shaps_lp$shap_contrib, value.name = "SHAP"),
+    melt(shaps_lp$data, value.name = "Value")
+  ) %>%
+    mutate(`Porosity group` = "Low"),
+  merge(
+    melt(shaps_hp$shap_contrib, value.name = "SHAP"),
+    melt(shaps_hp$data, value.name = "Value")
+  ) %>%
+    mutate(`Porosity group` = "High")
 )
 
 
 ggarrange(
-ggplot(filter(data, Var2=="CK_void_fraction"), aes(x=Value, y = SHAP, color=`Porosity group`)) +
-  geom_point() +
-  scale_x_log10() +
-  scale_color_manual(values = c("peru","steelblue")) +
-  labs(x = TeX("Void fraction, $\\phi_{CK}"))
-,
-ggplot(filter(data, Var2=="tau_e"), aes(x=Value, y = SHAP, color=`Porosity group`)) +
-  geom_point() +
-  scale_x_log10() +
-  scale_color_manual(values = c("peru","steelblue")) +
-  labs(x = TeX("Tortuosity, $\\tau_e"))
-,
-ggplot(filter(data, Var2=="P_f"), aes(x=Value, y = SHAP, color=`Porosity group`)) +
-  geom_point() +
-  scale_x_log10() +
-  scale_color_manual(values = c("peru","steelblue")) +
-  labs(x = TeX("Pore-filling cement, $P_f"))
-,
-ggplot(filter(data, Var2=="P_b"), aes(x=Value, y = SHAP, color=`Porosity group`)) +
-  geom_point() +
-  scale_x_log10() +
-  scale_color_manual(values = c("peru","steelblue")) +
-  labs(x = TeX("Pore-bridging cement, $P_b$"))
-,
-nrow = 2, ncol = 2, common.legend = TRUE, labels='auto')
+  ggplot(filter(data, Var2 == "CK_void_fraction"), aes(x = Value, y = SHAP, color = `Porosity group`)) +
+    geom_point() +
+    scale_x_log10() +
+    scale_color_manual(values = c("peru", "steelblue")) +
+    labs(x = TeX("Void fraction, $\\phi_{CK}")),
+  ggplot(filter(data, Var2 == "tau_e"), aes(x = Value, y = SHAP, color = `Porosity group`)) +
+    geom_point() +
+    scale_x_log10() +
+    scale_color_manual(values = c("peru", "steelblue")) +
+    labs(x = TeX("Tortuosity, $\\tau_e")),
+  ggplot(filter(data, Var2 == "P_f"), aes(x = Value, y = SHAP, color = `Porosity group`)) +
+    geom_point() +
+    scale_x_log10() +
+    scale_color_manual(values = c("peru", "steelblue")) +
+    labs(x = TeX("Pore-filling cement, $P_f")),
+  ggplot(filter(data, Var2 == "P_b"), aes(x = Value, y = SHAP, color = `Porosity group`)) +
+    geom_point() +
+    scale_x_log10() +
+    scale_color_manual(values = c("peru", "steelblue")) +
+    labs(x = TeX("Pore-bridging cement, $P_b$")),
+  nrow = 2, ncol = 2, common.legend = TRUE, labels = "auto"
+)
 ```
 
 Figure 6 . Feature importance for the gradient boosting model, using SHapely Additive exPlananations   (SHAP). SHAP values use game theory to explain how much each element contributes to each prediction from the gradient boosting model. Orange dots show high porosity samples, while blue samples indicate low porosity samples. The SHAP values are for the following features: a) Carman-Kozeny void fraction b) Tortuosity c) volume fraction of pore-filling cement d) volume fraction of pore-bridging cement.  
@@ -656,52 +670,38 @@ The SHAP values for pore filling cement concentration follow a sharply sigmoidal
   
 Table 2. Measures of model fitness for the gradient boosting and linear models on the high porosity and low porosity groups for the training and testing data.
 ```{r model_fitness}
-
-# model_fitness <- 
-#   rbind(
-#     postResample(log( predict(fit_xgboost_lp, df_lowphi)), log(df_lowphi$KLH)),
-#     postResample(log( predict(fit_xgboost_lp, df_holdout_lp)), log(df_holdout_lp$KLH)),
-#     
-#     postResample(log( predict(fit_xgboost_hp, df_highphi)), log(df_highphi$KLH)),
-#     postResample(log( predict(fit_xgboost_hp, df_holdout_hp)), log(df_holdout_hp$KLH)),
-#     
-#     postResample(log( predict(fit_enet_lp, train_lp)), (train_lp$KLH)),
-#     postResample(log( predict(fit_enet_lp, test_lp)), (test_lp$KLH)),
-#     
-#     postResample(log( predict(fit_xgboost_hp, train_hp)), (train_hp$KLH)),
-#     postResample(log( predict(fit_xgboost_hp, test_hp)), (test_hp$KLH))
-#   ) %>%
-#   as_tibble() %>%
-#   round(2) %>%
-#   rename(`R^2^`=Rsquared)
-model_fitness <- 
+model_fitness <-
   rbind(
     postResample(predict(fit_xgboost_lp, df_lowphi), log(df_lowphi$KLH)),
     postResample(predict(fit_xgboost_lp, df_holdout_lp), log(df_holdout_lp$KLH)),
-    
     postResample(predict(fit_xgboost_hp, df_highphi), log(df_highphi$KLH)),
     postResample(predict(fit_xgboost_hp, df_holdout_hp), log(df_holdout_hp$KLH)),
-    
     postResample(predict(fit_enet_lp, train_lp), train_lp$KLH),
     postResample(predict(fit_enet_lp, test_lp), test_lp$KLH),
-    
     postResample(predict(fit_xgboost_hp, train_hp), train_hp$KLH),
     postResample(predict(fit_xgboost_hp, test_hp), test_hp$KLH)
   ) %>%
   as_tibble() %>%
   round(2) %>%
-  rename(`R^2^`=Rsquared)
+  rename(`R^2^` = Rsquared)
 
-model_fitness$Model <- c("Gradient boosting","Gradient boosting","Gradient boosting","Gradient boosting",
-                         "Linear","Linear","Linear","Linear")
-model_fitness[,"Porosity group"] <- c("Low","Low","High","High",
-                         "Low","Low","High","High")
-model_fitness[,"Data"] <- c("Train","Test","Train","Test",
-                         "Train","Test","Train","Test")
+model_fitness$Model <- c(
+  "Gradient boosting", "Gradient boosting", "Gradient boosting", "Gradient boosting",
+  "Linear", "Linear", "Linear", "Linear"
+)
+model_fitness[, "Porosity group"] <- c(
+  "Low", "Low", "High", "High",
+  "Low", "Low", "High", "High"
+)
+model_fitness[, "Data"] <- c(
+  "Train", "Test", "Train", "Test",
+  "Train", "Test", "Train", "Test"
+)
 
-kable(model_fitness[,c("Model", "Porosity group","Data","RMSE","MAE","R^2^")],
-      format="pandoc") #%>%
-  #kable_styling()
+kable(model_fitness[, c("Model", "Porosity group", "Data", "RMSE", "MAE", "R^2^")],
+  format = "pandoc"
+) # %>%
+# kable_styling()
 ```
 
 The model metrics (Table 2) indicate that the gradient boosting method leads to smaller residuals and a higher R^2^ than the linear model.  For most cases, the models work better on cross-validation training data than testing data. For comparison, a porosity-only log-linear model has R^2^=0.81 for high porosity, 0.23 for low porosity. The gradient boosting model has better explanatory value than porosity alone, while the linear model has roughly the same explanatory value. Both models outperform the porosity-only model at low porosity. They also significantly outperform the physics-based models at low porosity.
@@ -814,48 +814,29 @@ The distributions of the grain distribution measures, $\bar D,\ C_D$, $\gamma$, 
 ```{r distribution, warning=FALSE}
 
 
-# ggarrange(
-# 
-# ggplot(df, aes(sample=GS)) +
-#   geom_qq() +
-#   scale_y_log10()+#limits=c(,1)) +
-#   labs(x = "Theoretical quantile",y="Median grain size (micron)"),
-# 
-# ggplot(df, aes(sample=SO)) +
-#   geom_qq() +
-#   scale_y_continuous(limits = c(1,2)) +
-#   #scale_y_log10(limits= c(1,3))
-#   labs(x = "Theoretical quantile", y="Trask sorting coefficient"),
-# ncol = 2, nrow=1)
-
-plot_hist_linear <- function(x, bins = 20){
+plot_hist_linear <- function(x, bins = 20) {
   x <- ensym(x)
   p <- ggplot(df, aes(x = !!x)) +
-    geom_histogram(fill="steelblue", bins = bins) +
-    #annotation_logticks(sides = "b") +
-    scale_y_continuous("Count", expand = c(0.001,0))
+    geom_histogram(fill = "steelblue", bins = bins) +
+    # annotation_logticks(sides = "b") +
+    scale_y_continuous("Count", expand = c(0.001, 0))
   p
 }
 
 ggarrange(
-
   plot_hist_linear(mean_GS, bins = 10) +
-    labs(x="Mean grain size (micron)")
-  ,
-
-plot_hist(Cv_GS, bins = 10) +
-  scale_x_log10() +
-  labs(x=TeX("$C_v$ of grain size")),
-
-plot_hist(gamma_GS, bins = 10) +
-  scale_x_log10() +
-  labs(x = TeX("$\\gamma$ of grain size")),
-
-plot_hist(tau_u, bins = 10) +
-  scale_x_log10() +
-  labs(x = "Tortuosity before cementation"),
-ncol = 2, nrow = 2)
-
+    labs(x = "Mean grain size (micron)"),
+  plot_hist(Cv_GS, bins = 10) +
+    scale_x_log10() +
+    labs(x = TeX("$C_v$ of grain size")),
+  plot_hist(gamma_GS, bins = 10) +
+    scale_x_log10() +
+    labs(x = TeX("$\\gamma$ of grain size")),
+  plot_hist(tau_u, bins = 10) +
+    scale_x_log10() +
+    labs(x = "Tortuosity before cementation"),
+  ncol = 2, nrow = 2
+)
 ```  
   
 
@@ -919,26 +900,25 @@ mu <- 3.14159
 sigma <- 1
 d <- rlnorm(10000, mu, sigma) # distribution of 1k points with mu=pi, sigma=1
 
-trask <- sqrt(quantile(d,0.75) / quantile(d,0.25))
+trask <- sqrt(quantile(d, 0.75) / quantile(d, 0.25))
 d_50 <- median(d)
 mu_calc <- log(d_50)
-erfinv <- function(x) qnorm((x + 1)/2)/sqrt(2)
+erfinv <- function(x) qnorm((x + 1) / 2) / sqrt(2)
 sigma_calc <- log(trask) / (sqrt(2) * erfinv(0.5))
-mean_calc <- exp(log(d_50) + sigma_calc/2)
-exponent_thingie <- (2*sqrt(2) * erfinv(0.5))
+mean_calc <- exp(log(d_50) + sigma_calc / 2)
+exponent_thingie <- (2 * sqrt(2) * erfinv(0.5))
 
 cat(
-  "\nThe median is", round(median(d),1),
-       "It should be", round(exp(mu),1),
-      "\nThe mean is",round(mean(d),1),
-      "It should be", round(exp(mu + sigma/2),1),
-      "\nThe standard deviation is",round(sd(d),1),
-      "It should be",round( sqrt( (exp(sigma^2)-1) * exp(2*mu+sigma^2))),
-      "\nThe Trask sorting coefficient is",round(sqrt(quantile(d,0.75) / quantile(d,0.25)),2),
-  "\nFrom the Trask and median diameters, the mean should be", round(mean_calc,1),"or",
-  round(d_50 * trask^(1/(2*sqrt(2) * erfinv(0.5))),1),
-  "\nThis is a deviation of", round((exp(mu + sigma/2) - mean_calc)/exp(mu + sigma/2)*100,1),"percent\n"
-      
+  "\nThe median is", round(median(d), 1),
+  "It should be", round(exp(mu), 1),
+  "\nThe mean is", round(mean(d), 1),
+  "It should be", round(exp(mu + sigma / 2), 1),
+  "\nThe standard deviation is", round(sd(d), 1),
+  "It should be", round(sqrt((exp(sigma^2) - 1) * exp(2 * mu + sigma^2))),
+  "\nThe Trask sorting coefficient is", round(sqrt(quantile(d, 0.75) / quantile(d, 0.25)), 2),
+  "\nFrom the Trask and median diameters, the mean should be", round(mean_calc, 1), "or",
+  round(d_50 * trask^(1 / (2 * sqrt(2) * erfinv(0.5))), 1),
+  "\nThis is a deviation of", round((exp(mu + sigma / 2) - mean_calc) / exp(mu + sigma / 2) * 100, 1), "percent\n"
 )
 ```
 

@@ -1,0 +1,9 @@
+repos:
+- repo: https://github.com/lorenzwalthert/precommit
+  rev: v0.3.2
+  hooks:
+  - id: lintr
+  - id: parsable-R
+  - id: no-browser-statement
+  - id: no-debug-statement
+  - id: style-files
